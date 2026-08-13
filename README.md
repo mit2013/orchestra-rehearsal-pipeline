@@ -1,9 +1,10 @@
-# アマオケ練習録音 自動編集パイプライン — フェーズ1
+# アマオケ練習録音 自動編集パイプライン
 
 ZOOM M4 MicTrak の 4ch/32bit float 録音を、取り込み → チャンネル結合 → TAKE連結 →
-不要区間(音出し・休憩・片付け)の候補提案 → 確認後のトリミング まで自動化する。
+不要区間(音出し・休憩・片付け)の候補提案 → 確認後のトリミング → 正規化 → ミックス
+まで自動化する。
 
-正規化・曲目単位エクスポート・クラウドアップロード・通知は次フェーズ。
+曲目単位エクスポート・MP3タグ埋め込み・クラウドアップロード・通知は次フェーズ。
 
 ## セットアップ
 
@@ -17,13 +18,18 @@ ffmpeg / ffprobe が PATH にあること(Homebrew 版で確認済み)。
 ## 使い方
 
 ```bash
-.venv/bin/python pipeline.py ingest  --date 260802          # TAKE走査・検証
+.venv/bin/python pipeline.py ingest  --date 260802          # TAKE走査・検証 + session_config.json 生成
 .venv/bin/python pipeline.py merge   --date 260802          # Tr1+Tr2ステレオ化 + TAKE連結
 .venv/bin/python pipeline.py propose --date 260802 --splits 2   # 境界候補・プレビュー・波形画像
 
 # ここで preview_clips/ を聴き、waveform.png を見て confirmed.json を修正する
 
 .venv/bin/python pipeline.py apply   --date 260802          # keep区間だけ書き出し
+
+# ここで session_config.json を確認・編集 (source / mix_ratio / ext_lr_map)
+
+.venv/bin/python pipeline.py normalize --date 260802        # ピーク正規化 (-1 dBFS)
+.venv/bin/python pipeline.py mix       --date 260802        # 最終ファイル生成
 ```
 
 `all` で ingest + merge + propose を通しで実行できる。中間ファイルは残るので、
@@ -39,11 +45,75 @@ output/260802/
   features_ext.npz     # フレーム特徴量キャッシュ(propose の再実行が速くなる)
   candidates.json      # 境界候補(提案そのもの。書き換えない)
   confirmed.json       # 編集用コピー。ここを直して apply に渡す
+  session_config.json  # 機種・LRマッピング・ミックス設定。ここも手で編集する
   analysis.json        # 閾値・ペナルティ・チューニング検出位置などの内訳
   preview_clips/       # 各境界の前後 ±15 秒(16bit WAV)
   waveform.png         # 区間色分け + 合奏らしさスコアの可視化
-  trimmed/             # 01_合奏1_ext.wav, 01_合奏1_int.wav, ...
+  trimmed/
+    01_合奏1_ext.wav        # apply の出力(無加工)
+    01_合奏1_ext_norm.wav   # normalize の出力(ピーク -1 dBFS)
+    01_合奏1_final.wav      # mix の出力(この先のエクスポート元)
 ```
+
+## セッション設定 (`session_config.json`)
+
+`ingest` 時に既定値で生成され、以降パイプラインは上書きしない(`confirmed.json` と同じ扱い)。
+
+```json
+{
+  "recorder": "zoom-m4",
+  "ext_lr_map": "normal",
+  "source": "ext_only",
+  "mix_ratio": {"ext": 0.6, "int": 0.4}
+}
+```
+
+| キー | 値 | 意味 |
+|---|---|---|
+| `recorder` | `zoom-m4` | レコーダ機種。`--recorder` でも指定可 |
+| `ext_lr_map` | `normal` / `swapped` | `normal` = Tr1→L, Tr2→R。配線ミスのセッションは `swapped` |
+| `source` | `ext_only` / `int_only` / `mix` | 最終ファイルの作り方。既定は `ext_only` |
+| `mix_ratio` | 例 `{"ext":0.6,"int":0.4}` | `source=mix` のときだけ使用 |
+
+`ext_lr_map` は **`merge` の時点で**適用される。それより下流(propose/apply/normalize/mix)は
+常に正しい L/R が揃っている前提でよい。変更したら `merge --groups ext --force` で
+外部マイク側だけ作り直せばよく、内蔵マイク側は影響を受けない。
+
+## 正規化とミックス
+
+**正規化**はピーク正規化のみ(目標 -1 dBFS)。基準値の算出範囲と適用範囲を分けているのが要点で、
+`--guard` で外側に広げた部分(音出しや休憩が混入しうる)は基準の計算から除外し、ゲイン自体は
+ブロック全体に一律で掛ける。除外幅は `--ref-margin`(既定120秒)。
+
+実データでは 32bit float 録音のピークが **0 dBFS を超えていた**(260726 の外部マイクで +9.7 dBFS)。
+32bit float なのでファイル上は壊れていないが、固定小数点で書き出せば激しくクリップする。
+つまりこの正規化は「音量を揃える」だけでなく、後段のエクスポートを成立させるために必要な工程である。
+
+**ミックス**は `source` に従う。`ext_only`/`int_only` は正規化済みファイルをそのままコピーするだけで、
+合成しないためピーク超過は起こりえない。`source=mix` のときだけ加算合成し、合成ピークが安全閾値
+(既定 -1 dBFS)を超えていたら**一律の線形ゲインで下げる**(コンプ・リミッタは使わない)。
+
+なお指示書には「位相の重なりでどちらの原音のピークよりも高い合成ピークが生まれる」とあるが、
+比率の合計が 1.0 以下(6:4、8:2 など)の凸結合では三角不等式より
+`|w1·a + w2·b| ≤ w1·|a| + w2·|b| ≤ max(peak_a, peak_b)` が常に成り立ち、超過は数学的に起こりえない。
+実際に超過するのは比率の合計が 1.0 を超える設定(例 `ext=1.0, int=0.8`)である。比率を固定しない
+仕様である以上その設定は取りうるので安全処理は必要だが、発動条件は位相ではなく比率の合計である。
+合成データで両方を実測し、6:4 では -1.42 dBFS(調整なし)、1.0:0.8 では +3.66 dBFS を検出して
+-4.66 dB 下げ、正確に -1.00 dBFS に収まることを確認している。
+
+## レコーダプロファイル
+
+ファイル探索だけが機種依存なので、そこを `orchpipe/recorder_profiles/` に切り出してある。
+
+| プロファイル | 状態 | 備考 |
+|---|---|---|
+| `zoom-m4` | **本実装** | `{date}_{番号}.TAKE/` に Tr1/Tr2/TrMic。260802・260726 で検証済み |
+| `zoom-f3` | スタブ | 呼ぶと `NotImplementedError`。想定ファイル配置は docstring に記載 |
+| `single-file` | スタブ | 同上。MP3入力時は事前WAV変換が必要、というメモを docstring に記載 |
+
+`channel_groups`(例 `{"ext": ["Tr1","Tr2"], "int": ["TrMic"]}`)が、どのトラックがどの系統に
+属するかを表す。2トラックで1系統ならモノラル2本を左右に組み、1トラックならそれ自体がステレオ、
+と `merge` が解釈する。
 
 ## 品質について
 
@@ -73,8 +143,8 @@ output/260802/
 | `silence_ratio` | ほぼ 0(強音が途切れない) | 中程度(指揮者が止める) |
 | `flatness` | 高(雑音的) | 低 |
 
-これらを頑健化(中央値/MAD)して重み付き合成し、5 分の中央値フィルタで平滑化したものが
-「合奏らしさスコア」。判定は **2状態のビタビ探索**で行う — 窓ごとのスコア合計と
+これらを頑健化(中央値/MAD)して重み付き合成したものが「合奏らしさスコア」
+(平滑化は既定で無効。理由は後述)。判定は **2状態のビタビ探索**で行う — 窓ごとのスコア合計と
 状態切り替え回数のトレードオフを全体最適で解くので、合奏中の一時的な落ち込み(長い強奏など)
 では切り替わらず、実際の休憩のような「深く長い谷」だけが境界になる。
 `--splits N` を指定すると、合奏区間がちょうど N 個になる遷移ペナルティを二分探索する。

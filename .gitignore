@@ -19,6 +19,7 @@
 /output/**
 !/output/*/
 !/output/*/confirmed.json
+!/output/*/session_config.json
 
 # ---------------------------------------------------------------------------
 # Python
