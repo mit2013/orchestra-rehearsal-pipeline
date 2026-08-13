@@ -6,11 +6,14 @@
     python pipeline.py propose --date 260802 --splits 2
     # ユーザーが preview_clips/ と waveform.png を確認して confirmed.json を編集
     python pipeline.py apply   --date 260802
+    # session_config.json を確認・編集 (source, mix_ratio, ext_lr_map)
+    python pipeline.py normalize --date 260802
+    python pipeline.py mix       --date 260802
 
     python pipeline.py all     --date 260802 --splits 2   # ingest+merge+propose を通しで
 
-スコープは 取り込み → チャンネル結合 → TAKE連結 → 不要区間の候補提案 → 確定後のトリミング。
-正規化・曲目単位エクスポート・アップロード・通知は次フェーズ。
+スコープは 取り込み → チャンネル結合 → TAKE連結 → 不要区間の候補提案 → 確定後のトリミング
+→ 正規化 → ミックス。曲目単位エクスポート・MP3タグ・アップロード・通知は次フェーズ。
 """
 
 from __future__ import annotations
@@ -20,11 +23,15 @@ import sys
 from pathlib import Path
 
 from orchpipe import apply as apply_mod
+from orchpipe import config as config_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
 from orchpipe import merge as merge_mod
+from orchpipe import mix as mix_mod
+from orchpipe import normalize as norm_mod
 from orchpipe import preview as preview_mod
 from orchpipe import segment as seg_mod
+from orchpipe.recorder_profiles import DEFAULT_PROFILE, PROFILES, get_profile
 from orchpipe.util import PipelineError, fmt_time, log, out_dir, read_json, write_json
 
 ROOT_DEFAULT = Path(__file__).resolve().parent
@@ -32,28 +39,31 @@ ROOT_DEFAULT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 
-def _load_takes(root: Path, date: str, outdir: Path) -> list[ingest_mod.Take]:
+def _profile_for(args, outdir: Path):
+    """`--recorder` 明示 > session_config.json > 既定 の順で機種を決める。"""
+    name = getattr(args, "recorder", None)
+    if not name:
+        cfg_path = config_mod.config_path(outdir)
+        name = config_mod.load(outdir).recorder if cfg_path.exists() else DEFAULT_PROFILE
+    return get_profile(name)
+
+
+def _load_takes(root: Path, date: str, outdir: Path, profile=None) -> list[ingest_mod.Take]:
     """ingest.json があれば再走査を省く(再開しやすくするため)。"""
     manifest = outdir / "ingest.json"
     if manifest.exists():
         data = read_json(manifest)
-        return [
-            ingest_mod.Take(
-                date=t["date"], number=t["number"], dir=Path(t["dir"]),
-                tr1=Path(t["tr1"]), tr2=Path(t["tr2"]), trmic=Path(t["trmic"]),
-                sample_rate=t["sample_rate"], duration=t["duration"],
-            )
-            for t in data["takes"]
-        ]
-    return ingest_mod.run_ingest(root, date, outdir)
+        return [ingest_mod.Take.from_dict(t) for t in data["takes"]]
+    return ingest_mod.run_ingest(root, date, outdir, profile)
 
 
-def _merged_paths(outdir: Path) -> dict[str, Path]:
-    return {"ext": outdir / "raw_merged_ext.wav", "int": outdir / "raw_merged_int.wav"}
+def _merged_paths(outdir: Path, profile=None) -> dict[str, Path]:
+    groups = list(profile.channel_groups) if profile else ["ext", "int"]
+    return {g: merge_mod.merged_path(outdir, g) for g in groups}
 
 
-def _require_merged(outdir: Path) -> dict[str, Path]:
-    paths = _merged_paths(outdir)
+def _require_merged(outdir: Path, profile=None) -> dict[str, Path]:
+    paths = _merged_paths(outdir, profile)
     missing = [p.name for p in paths.values() if not p.exists()]
     if missing:
         raise PipelineError(
@@ -68,13 +78,18 @@ def _require_merged(outdir: Path) -> dict[str, Path]:
 
 def cmd_ingest(args) -> None:
     outdir = out_dir(args.root, args.date)
-    ingest_mod.run_ingest(args.root, args.date, outdir)
+    profile = get_profile(args.recorder or DEFAULT_PROFILE)
+    ingest_mod.run_ingest(args.root, args.date, outdir, profile)
+    config_mod.ensure(outdir, profile.name)
 
 
 def cmd_merge(args) -> None:
     outdir = out_dir(args.root, args.date)
-    takes = _load_takes(args.root, args.date, outdir)
-    merge_mod.run_merge(takes, outdir, force=args.force)
+    profile = _profile_for(args, outdir)
+    cfg = config_mod.load(outdir)
+    takes = _load_takes(args.root, args.date, outdir, profile)
+    only = args.groups.split(",") if args.groups else None
+    merge_mod.run_merge(takes, outdir, cfg, profile, force=args.force, only_groups=only)
 
 
 def cmd_propose(args) -> None:
@@ -145,13 +160,46 @@ def cmd_propose(args) -> None:
 
 def cmd_apply(args) -> None:
     outdir = out_dir(args.root, args.date)
-    takes = _load_takes(args.root, args.date, outdir)
+    profile = _profile_for(args, outdir)
+    takes = _load_takes(args.root, args.date, outdir, profile)
     total = sum(t.duration for t in takes)
-    sources = _require_merged(outdir)
+    sources = _require_merged(outdir, profile)
+    if args.groups:
+        want = args.groups.split(",")
+        unknown = [g for g in want if g not in sources]
+        if unknown:
+            raise PipelineError(
+                f"未知の系統です: {', '.join(unknown)}(利用可能: {', '.join(sources)})"
+            )
+        sources = {g: p for g, p in sources.items() if g in want}
+        log(f"対象系統を限定: {', '.join(sources)}")
     confirmed = Path(args.input) if args.input else outdir / "confirmed.json"
     if not confirmed.exists():
         raise PipelineError(f"{confirmed} がありません。先に `propose` を実行してください。")
     apply_mod.run_apply(confirmed, sources, outdir / "trimmed", total, force=args.force)
+
+
+def cmd_normalize(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    profile = _profile_for(args, outdir)
+    groups = list(profile.channel_groups)
+    norm_mod.run_normalize(
+        outdir, groups,
+        target_db=args.target,
+        ref_margin=args.ref_margin,
+        force=args.force,
+    )
+
+
+def cmd_mix(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    log(f"session_config: source={cfg.source}, mix_ratio={cfg.mix_ratio}, ext_lr_map={cfg.ext_lr_map}")
+    written = mix_mod.run_mix(outdir, cfg, safe_peak_db=args.safe_peak, force=args.force)
+    print()
+    print(f"=== 最終ファイル ({args.date}) ===")
+    for p in written:
+        print(f"  {p.name}")
 
 
 def cmd_all(args) -> None:
@@ -170,10 +218,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--date", required=True, help="TAKEフォルダの日付部分 (例: 260802)")
         sp.add_argument("--root", type=Path, default=ROOT_DEFAULT, help="TAKEフォルダを置いた親ディレクトリ")
         sp.add_argument("--force", action="store_true", help="既存の中間ファイルを作り直す")
+        sp.add_argument("--recorder", choices=sorted(PROFILES), default=None,
+                        help=f"レコーダ機種 (既定: {DEFAULT_PROFILE}、または session_config.json の値)")
         return sp
 
     common(sub.add_parser("ingest", help="TAKEを走査・検証する")).set_defaults(func=cmd_ingest)
-    common(sub.add_parser("merge", help="Tr1+Tr2 のステレオ化とTAKE連結")).set_defaults(func=cmd_merge)
+
+    sp = common(sub.add_parser("merge", help="チャンネル結合とTAKE連結"))
+    sp.add_argument("--groups", default=None, help="対象系統をカンマ区切りで限定 (例: ext)")
+    sp.set_defaults(func=cmd_merge)
 
     sp = common(sub.add_parser("propose", help="不要区間の候補を提案する"))
     sp.add_argument("--splits", type=int, default=None, help="最終的に何分割(=合奏いくつ)にしたいかのヒント")
@@ -191,7 +244,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("apply", help="確定JSONにもとづきトリミング"))
     sp.add_argument("--input", default=None, help="確定JSON (既定: output/{date}/confirmed.json)")
+    sp.add_argument("--groups", default=None, help="対象系統をカンマ区切りで限定 (例: ext)")
     sp.set_defaults(func=cmd_apply)
+
+    sp = common(sub.add_parser("normalize", help="trimmed/ の各ブロックをピーク正規化"))
+    sp.add_argument("--target", type=float, default=norm_mod.TARGET_DB, help="目標ピーク [dBFS]")
+    sp.add_argument("--ref-margin", type=float, default=120.0,
+                    help="基準ピークの算出から除外する前後の長さ [秒] (guard 相当)")
+    sp.set_defaults(func=cmd_normalize)
+
+    sp = common(sub.add_parser("mix", help="正規化済み ext/int から最終ファイルを作る"))
+    sp.add_argument("--safe-peak", type=float, default=mix_mod.SAFE_PEAK_DB,
+                    help="合成後に超えてはならないピーク [dBFS]")
+    sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("all", help="ingest + merge + propose を通しで実行"))
     sp.add_argument("--splits", type=int, default=None)
@@ -217,6 +282,9 @@ def main() -> int:
     except PipelineError as e:
         print(f"\nエラー: {e}", file=sys.stderr)
         return 1
+    except NotImplementedError as e:
+        print(f"\n未実装: {e}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("\n中断しました(中間ファイルは残っているので再実行で続きから)", file=sys.stderr)
         return 130

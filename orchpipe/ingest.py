@@ -1,129 +1,174 @@
 """取り込み: TAKEフォルダの走査と整合性検証。
 
-各TAKEに Tr1/Tr2/TrMic が揃っているか、サンプルレート・ビット深度・チャンネル数が
-想定どおりかを検証する。不整合があれば PipelineError で処理を止める。
+ファイルの探索そのものは `recorder_profiles` に委譲し、ここでは機種によらない
+検証(必要なトラックが揃っているか、フォーマットがTAKE間・トラック間で一致するか、
+同じ系統のトラックの長さが揃っているか)だけを行う。
 """
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .recorder_profiles import RecorderProfile, TakeInfo, get_profile
 from .util import PipelineError, log, probe_audio, write_json
-
-TAKE_DIR_RE = re.compile(r"^(?P<date>\d{6})_(?P<num>\d{3})\.TAKE$")
 
 
 @dataclass
 class Take:
+    """検証済みの1 TAKE。`files` がトラック名 -> 実ファイルの対応。"""
+
     date: str
     number: int
-    dir: Path
-    tr1: Path
-    tr2: Path
-    trmic: Path
+    dir: Path | None
+    files: dict[str, Path]
     sample_rate: int
     duration: float
 
+    # ZOOM M4 向けの短縮アクセサ(既存コードとの互換のために残している)
+    @property
+    def tr1(self) -> Path:
+        return self.files["Tr1"]
+
+    @property
+    def tr2(self) -> Path:
+        return self.files["Tr2"]
+
+    @property
+    def trmic(self) -> Path:
+        return self.files["TrMic"]
+
     def as_dict(self) -> dict:
-        d = asdict(self)
-        for k in ("dir", "tr1", "tr2", "trmic"):
-            d[k] = str(d[k])
+        d = {
+            "date": self.date,
+            "number": self.number,
+            "dir": str(self.dir) if self.dir is not None else None,
+            "files": {k: str(v) for k, v in self.files.items()},
+            "sample_rate": self.sample_rate,
+            "duration": self.duration,
+        }
+        # 旧フォーマットの ingest.json しか読めない環境のために従来キーも残す。
+        for legacy, track in (("tr1", "Tr1"), ("tr2", "Tr2"), ("trmic", "TrMic")):
+            if track in self.files:
+                d[legacy] = str(self.files[track])
         return d
 
+    @classmethod
+    def from_dict(cls, t: dict) -> "Take":
+        if "files" in t:
+            files = {k: Path(v) for k, v in t["files"].items()}
+        else:  # 旧フォーマット
+            files = {
+                track: Path(t[legacy])
+                for legacy, track in (("tr1", "Tr1"), ("tr2", "Tr2"), ("trmic", "TrMic"))
+                if legacy in t
+            }
+        return cls(
+            date=t["date"],
+            number=t["number"],
+            dir=Path(t["dir"]) if t.get("dir") else None,
+            files=files,
+            sample_rate=t["sample_rate"],
+            duration=t["duration"],
+        )
 
-def find_take_dirs(root: Path, date: str) -> list[tuple[int, Path]]:
-    found: list[tuple[int, Path]] = []
-    for p in sorted(root.iterdir()):
-        if not p.is_dir():
-            continue
-        m = TAKE_DIR_RE.match(p.name)
-        if m and m.group("date") == date:
-            found.append((int(m.group("num")), p))
-    found.sort(key=lambda t: t[0])
-    return found
+
+def _expected_channels(tracks: list[str]) -> int:
+    """系統内のトラック1本あたりの想定チャンネル数。
+
+    複数トラックで1系統を成す場合(M4の外部マイク Tr1+Tr2)は各トラックがモノラル。
+    1トラックで1系統なら、そのファイル自体がステレオ(M4の内蔵マイク TrMic)。
+    """
+    return 1 if len(tracks) > 1 else 2
 
 
-def scan(root: Path, date: str) -> list[Take]:
+def scan(root: Path, date: str, profile: RecorderProfile | None = None) -> list[Take]:
     """TAKEを番号順(=時系列順)に走査・検証して返す。"""
-    take_dirs = find_take_dirs(root, date)
-    if not take_dirs:
+    profile = profile or get_profile("zoom-m4")
+    discovered: list[TakeInfo] = profile.discover(root, date)
+    if not discovered:
         raise PipelineError(f"{root} に {date}_XXX.TAKE フォルダが見つかりません")
 
-    numbers = [n for n, _ in take_dirs]
-    expected = list(range(numbers[0], numbers[0] + len(numbers)))
+    numbers = [t.number for t in discovered]
+    expected = list(range(1, 1 + len(numbers)))
     if numbers != expected:
-        log(f"警告: TAKE番号が連続していません {numbers}(欠損の可能性あり)")
+        log(f"警告: TAKE番号が 001 から連番になっていません {numbers}(欠損の可能性あり)")
 
     takes: list[Take] = []
     ref: dict | None = None
 
-    for number, d in take_dirs:
-        stem = f"{date}_{number:03d}"
-        paths = {
-            "Tr1": d / f"{stem}_Tr1.WAV",
-            "Tr2": d / f"{stem}_Tr2.WAV",
-            "TrMic": d / f"{stem}_TrMic.WAV",
-        }
-        missing = [k for k, p in paths.items() if not p.exists()]
+    for ti in discovered:
+        label = ti.dir.name if ti.dir is not None else f"{date}_{ti.number:03d}"
+        missing = [t for t, p in ti.files.items() if not p.exists()]
         if missing:
-            raise PipelineError(f"{d.name}: {', '.join(missing)} が見つかりません")
+            raise PipelineError(f"{label}: {', '.join(missing)} が見つかりません")
 
-        probes = {k: probe_audio(p) for k, p in paths.items()}
+        probes = {t: probe_audio(p) for t, p in ti.files.items()}
 
-        # チャンネル数: 外部マイクはモノラル×2、内蔵マイクはステレオ。
-        for key, want in (("Tr1", 1), ("Tr2", 1), ("TrMic", 2)):
-            got = probes[key]["channels"]
-            if got != want:
-                raise PipelineError(
-                    f"{d.name}/{probes[key]['name']}: チャンネル数が想定と異なります "
-                    f"(期待 {want}ch, 実際 {got}ch)"
-                )
+        # 系統ごとの想定チャンネル数を検証する。
+        for group, tracks in profile.channel_groups.items():
+            want = _expected_channels(tracks)
+            for t in tracks:
+                got = probes[t]["channels"]
+                if got != want:
+                    raise PipelineError(
+                        f"{label}/{probes[t]['name']}: チャンネル数が想定と異なります "
+                        f"(期待 {want}ch, 実際 {got}ch)"
+                    )
 
         # フォーマットはTAKE間・トラック間で一致していること。
-        for key, pr in probes.items():
+        for t, pr in probes.items():
             sig = (pr["codec_name"], pr["sample_rate"], pr["bits_per_sample"])
             if ref is None:
-                ref = {"key": f"{d.name}/{pr['name']}", "sig": sig}
+                ref = {"key": f"{label}/{pr['name']}", "sig": sig}
             elif sig != ref["sig"]:
                 raise PipelineError(
                     f"フォーマット不一致: {ref['key']} = {ref['sig']} / "
-                    f"{d.name}/{pr['name']} = {sig}"
+                    f"{label}/{pr['name']} = {sig}"
                 )
 
-        # Tr1 と Tr2 は同一マイクペアなので長さが一致していなければならない。
-        d1, d2, dm = probes["Tr1"]["duration"], probes["Tr2"]["duration"], probes["TrMic"]["duration"]
-        if abs(d1 - d2) > 0.05:
-            raise PipelineError(
-                f"{d.name}: Tr1({d1:.3f}s) と Tr2({d2:.3f}s) の長さが一致しません"
-            )
-        if abs(d1 - dm) > 1.0:
-            log(f"警告: {d.name}: 外部マイク {d1:.1f}s と内蔵マイク {dm:.1f}s の長さが {abs(d1-dm):.2f}s ずれています")
+        # 同じ系統に属するトラックは同時収録なので長さが一致していなければならない。
+        for group, tracks in profile.channel_groups.items():
+            for a, b in zip(tracks, tracks[1:]):
+                da, db = probes[a]["duration"], probes[b]["duration"]
+                if abs(da - db) > 0.05:
+                    raise PipelineError(
+                        f"{label}: {a}({da:.3f}s) と {b}({db:.3f}s) の長さが一致しません"
+                    )
 
+        # 系統をまたぐズレは止めるほどではないが、気付けるように警告する。
+        durations = {g: probes[tracks[0]]["duration"] for g, tracks in profile.channel_groups.items()}
+        base_group = next(iter(profile.channel_groups))
+        base = durations[base_group]
+        for g, d in durations.items():
+            if g != base_group and abs(base - d) > 1.0:
+                log(f"警告: {label}: {base_group} {base:.1f}s と {g} {d:.1f}s の長さが {abs(base-d):.2f}s ずれています")
+
+        first_track = profile.track_names[0]
         takes.append(
             Take(
                 date=date,
-                number=number,
-                dir=d,
-                tr1=paths["Tr1"],
-                tr2=paths["Tr2"],
-                trmic=paths["TrMic"],
-                sample_rate=probes["Tr1"]["sample_rate"],
-                duration=d1,
+                number=ti.number,
+                dir=ti.dir,
+                files=ti.files,
+                sample_rate=probes[first_track]["sample_rate"],
+                duration=base,
             )
         )
         log(
-            f"TAKE {number:03d}: OK  {d1/60:.1f}分  "
-            f"{probes['Tr1']['sample_rate']}Hz/{probes['Tr1']['bits_per_sample']}bit "
-            f"{probes['Tr1']['codec_name']}"
+            f"TAKE {ti.number:03d}: OK  {base/60:.1f}分  "
+            f"{probes[first_track]['sample_rate']}Hz/{probes[first_track]['bits_per_sample']}bit "
+            f"{probes[first_track]['codec_name']}"
         )
 
     return takes
 
 
-def run_ingest(root: Path, date: str, outdir: Path) -> list[Take]:
-    takes = scan(root, date)
+def run_ingest(
+    root: Path, date: str, outdir: Path, profile: RecorderProfile | None = None
+) -> list[Take]:
+    profile = profile or get_profile("zoom-m4")
+    takes = scan(root, date, profile)
     total = sum(t.duration for t in takes)
 
     # TAKE境界の絶対時刻(結合後のタイムライン上)を記録しておくと後段で追跡しやすい。
@@ -135,6 +180,8 @@ def run_ingest(root: Path, date: str, outdir: Path) -> list[Take]:
     manifest = {
         "date": date,
         "root": str(root),
+        "recorder": profile.name,
+        "channel_groups": profile.channel_groups,
         "n_takes": len(takes),
         "sample_rate": takes[0].sample_rate,
         "total_duration": total,
