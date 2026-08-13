@@ -39,31 +39,51 @@ ROOT_DEFAULT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 
-def _profile_for(args, outdir: Path):
-    """`--recorder` 明示 > session_config.json > 既定 の順で機種を決める。"""
-    name = getattr(args, "recorder", None)
-    if not name:
-        cfg_path = config_mod.config_path(outdir)
-        name = config_mod.load(outdir).recorder if cfg_path.exists() else DEFAULT_PROFILE
-    return get_profile(name)
+def _session_info(root: Path, date: str, outdir: Path) -> tuple[str, dict[str, list[str]]]:
+    """`ingest.json` から機種と系統定義を読む。
+
+    `--recorder` は `ingest` でしか受け付けない。下流は取り込み時に記録された
+    `recorder` / `channel_groups` に従うので、系統名をコード側に埋め込む必要がない。
+    """
+    manifest = outdir / "ingest.json"
+    if not manifest.exists():
+        log(f"{manifest.name} がないため、既定プロファイル({DEFAULT_PROFILE})で取り込みます")
+        ingest_mod.run_ingest(root, date, outdir, get_profile(DEFAULT_PROFILE))
+    data = read_json(manifest)
+    recorder = data.get("recorder", DEFAULT_PROFILE)
+    # channel_groups を持たない旧フォーマットは、機種名からプロファイル定義で補う。
+    groups = data.get("channel_groups") or get_profile(recorder).channel_groups
+    return recorder, {g: list(tracks) for g, tracks in groups.items()}
 
 
-def _load_takes(root: Path, date: str, outdir: Path, profile=None) -> list[ingest_mod.Take]:
+def _check_groups(spec: str | None, groups) -> list[str] | None:
+    """`--groups` の指定を検証して返す。未指定なら None(=全系統)。"""
+    if not spec:
+        return None
+    want = [g.strip() for g in spec.split(",") if g.strip()]
+    unknown = [g for g in want if g not in groups]
+    if unknown:
+        raise PipelineError(
+            f"未知の系統です: {', '.join(unknown)}(利用可能: {', '.join(groups)})"
+        )
+    return want
+
+
+def _load_takes(root: Path, date: str, outdir: Path) -> list[ingest_mod.Take]:
     """ingest.json があれば再走査を省く(再開しやすくするため)。"""
     manifest = outdir / "ingest.json"
     if manifest.exists():
         data = read_json(manifest)
         return [ingest_mod.Take.from_dict(t) for t in data["takes"]]
-    return ingest_mod.run_ingest(root, date, outdir, profile)
+    return ingest_mod.run_ingest(root, date, outdir, get_profile(DEFAULT_PROFILE))
 
 
-def _merged_paths(outdir: Path, profile=None) -> dict[str, Path]:
-    groups = list(profile.channel_groups) if profile else ["ext", "int"]
+def _merged_paths(outdir: Path, groups) -> dict[str, Path]:
     return {g: merge_mod.merged_path(outdir, g) for g in groups}
 
 
-def _require_merged(outdir: Path, profile=None) -> dict[str, Path]:
-    paths = _merged_paths(outdir, profile)
+def _require_merged(outdir: Path, groups) -> dict[str, Path]:
+    paths = _merged_paths(outdir, groups)
     missing = [p.name for p in paths.values() if not p.exists()]
     if missing:
         raise PipelineError(
@@ -85,18 +105,24 @@ def cmd_ingest(args) -> None:
 
 def cmd_merge(args) -> None:
     outdir = out_dir(args.root, args.date)
-    profile = _profile_for(args, outdir)
+    recorder, groups = _session_info(args.root, args.date, outdir)
     cfg = config_mod.load(outdir)
-    takes = _load_takes(args.root, args.date, outdir, profile)
-    only = args.groups.split(",") if args.groups else None
-    merge_mod.run_merge(takes, outdir, cfg, profile, force=args.force, only_groups=only)
+    takes = _load_takes(args.root, args.date, outdir)
+    only = _check_groups(args.groups, groups)
+    merge_mod.run_merge(takes, outdir, cfg, groups, force=args.force, only_groups=only)
 
 
 def cmd_propose(args) -> None:
     outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
     takes = _load_takes(args.root, args.date, outdir)
     total = sum(t.duration for t in takes)
-    sources = _require_merged(outdir)
+    if args.source not in groups:
+        raise PipelineError(
+            f"--source は {', '.join(groups)} のいずれかです(実際: {args.source!r}、"
+            f"機種 {recorder})"
+        )
+    sources = _require_merged(outdir, groups)
     analysis_src = sources[args.source]
 
     cache = outdir / f"features_{args.source}.npz"
@@ -160,17 +186,12 @@ def cmd_propose(args) -> None:
 
 def cmd_apply(args) -> None:
     outdir = out_dir(args.root, args.date)
-    profile = _profile_for(args, outdir)
-    takes = _load_takes(args.root, args.date, outdir, profile)
+    recorder, groups = _session_info(args.root, args.date, outdir)
+    takes = _load_takes(args.root, args.date, outdir)
     total = sum(t.duration for t in takes)
-    sources = _require_merged(outdir, profile)
-    if args.groups:
-        want = args.groups.split(",")
-        unknown = [g for g in want if g not in sources]
-        if unknown:
-            raise PipelineError(
-                f"未知の系統です: {', '.join(unknown)}(利用可能: {', '.join(sources)})"
-            )
+    sources = _require_merged(outdir, groups)
+    want = _check_groups(args.groups, groups)
+    if want:
         sources = {g: p for g, p in sources.items() if g in want}
         log(f"対象系統を限定: {', '.join(sources)}")
     confirmed = Path(args.input) if args.input else outdir / "confirmed.json"
@@ -181,10 +202,9 @@ def cmd_apply(args) -> None:
 
 def cmd_normalize(args) -> None:
     outdir = out_dir(args.root, args.date)
-    profile = _profile_for(args, outdir)
-    groups = list(profile.channel_groups)
+    recorder, groups = _session_info(args.root, args.date, outdir)
     norm_mod.run_normalize(
-        outdir, groups,
+        outdir, list(groups),
         target_db=args.target,
         ref_margin=args.ref_margin,
         force=args.force,
@@ -193,9 +213,12 @@ def cmd_normalize(args) -> None:
 
 def cmd_mix(args) -> None:
     outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
     cfg = config_mod.load(outdir)
     log(f"session_config: source={cfg.source}, mix_ratio={cfg.mix_ratio}, ext_lr_map={cfg.ext_lr_map}")
-    written = mix_mod.run_mix(outdir, cfg, safe_peak_db=args.safe_peak, force=args.force)
+    written = mix_mod.run_mix(
+        outdir, cfg, list(groups), safe_peak_db=args.safe_peak, force=args.force
+    )
     print()
     print(f"=== 最終ファイル ({args.date}) ===")
     for p in written:
@@ -218,11 +241,19 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--date", required=True, help="TAKEフォルダの日付部分 (例: 260802)")
         sp.add_argument("--root", type=Path, default=ROOT_DEFAULT, help="TAKEフォルダを置いた親ディレクトリ")
         sp.add_argument("--force", action="store_true", help="既存の中間ファイルを作り直す")
-        sp.add_argument("--recorder", choices=sorted(PROFILES), default=None,
-                        help=f"レコーダ機種 (既定: {DEFAULT_PROFILE}、または session_config.json の値)")
         return sp
 
-    common(sub.add_parser("ingest", help="TAKEを走査・検証する")).set_defaults(func=cmd_ingest)
+    def with_recorder(sp):
+        """`--recorder` は取り込み時にしか意味を持たない。
+
+        下流の各段は output/{date}/ingest.json に記録された recorder / channel_groups に
+        従うので、機種を指定し直す必要がない(指定できると食い違いの原因になる)。
+        """
+        sp.add_argument("--recorder", choices=sorted(PROFILES), default=DEFAULT_PROFILE,
+                        help=f"レコーダ機種 (既定: {DEFAULT_PROFILE})")
+        return sp
+
+    with_recorder(common(sub.add_parser("ingest", help="TAKEを走査・検証する"))).set_defaults(func=cmd_ingest)
 
     sp = common(sub.add_parser("merge", help="チャンネル結合とTAKE連結"))
     sp.add_argument("--groups", default=None, help="対象系統をカンマ区切りで限定 (例: ext)")
@@ -230,7 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("propose", help="不要区間の候補を提案する"))
     sp.add_argument("--splits", type=int, default=None, help="最終的に何分割(=合奏いくつ)にしたいかのヒント")
-    sp.add_argument("--source", choices=["ext", "int"], default="ext", help="解析に使う系統")
+    sp.add_argument("--source", default="ext",
+                    help="解析に使う系統 (ingest.json の channel_groups から選ぶ)")
     sp.add_argument("--win", type=float, default=20.0, help="解析窓長 [秒]")
     sp.add_argument("--hop", type=float, default=5.0, help="解析ホップ [秒]")
     sp.add_argument("--min-keep", type=float, default=8.0, help="合奏区間の最小長 [分]")
@@ -258,9 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="合成後に超えてはならないピーク [dBFS]")
     sp.set_defaults(func=cmd_mix)
 
-    sp = common(sub.add_parser("all", help="ingest + merge + propose を通しで実行"))
+    sp = with_recorder(common(sub.add_parser("all", help="ingest + merge + propose を通しで実行")))
     sp.add_argument("--splits", type=int, default=None)
-    sp.add_argument("--source", choices=["ext", "int"], default="ext")
+    sp.add_argument("--source", default="ext")
     sp.add_argument("--win", type=float, default=20.0)
     sp.add_argument("--hop", type=float, default=5.0)
     sp.add_argument("--min-keep", type=float, default=8.0)

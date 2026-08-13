@@ -50,6 +50,7 @@ def _mix_filter(w_ext: float, w_int: float, gain_db: float | None = None) -> str
 def run_mix(
     outdir: Path,
     cfg: SessionConfig,
+    groups: list[str] | None = None,
     blocks: dict[tuple[str, str], Path] | None = None,
     safe_peak_db: float = SAFE_PEAK_DB,
     force: bool = False,
@@ -58,7 +59,7 @@ def run_mix(
     if blocks is None:
         from .normalize import block_files
 
-        raw = block_files(trimmed, ["ext", "int"])
+        raw = block_files(trimmed, list(groups or ("ext", "int")))
         blocks = {k: norm_path(v) for k, v in raw.items()}
 
     names = sorted({b for (b, _g) in blocks})

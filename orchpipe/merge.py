@@ -20,7 +20,7 @@ import numpy as np
 
 from .config import SessionConfig
 from .ingest import Take
-from .recorder_profiles import RecorderProfile, get_profile
+from .recorder_profiles import get_profile
 from .util import FFMPEG, PipelineError, log, probe_audio, run
 
 # 2本のモノラルをステレオに組む際の割り当て。amerge は入力順に依存して曖昧なので、
@@ -147,17 +147,19 @@ def run_merge(
     takes: list[Take],
     outdir: Path,
     cfg: SessionConfig | None = None,
-    profile: RecorderProfile | None = None,
+    channel_groups: dict[str, list[str]] | None = None,
     force: bool = False,
     only_groups: list[str] | None = None,
 ) -> dict[str, Path]:
-    profile = profile or get_profile("zoom-m4")
+    # 系統定義は ingest.json 由来のものを受け取る。渡されなければ既定機種の定義。
+    if channel_groups is None:
+        channel_groups = get_profile("zoom-m4").channel_groups
     cfg = cfg or SessionConfig()
     total = sum(t.duration for t in takes)
     sr = takes[0].sample_rate
     out: dict[str, Path] = {}
 
-    for group, tracks in profile.channel_groups.items():
+    for group, tracks in channel_groups.items():
         dst = merged_path(outdir, group)
         out[group] = dst
         if only_groups is not None and group not in only_groups:

@@ -70,7 +70,7 @@ output/260802/
 
 | キー | 値 | 意味 |
 |---|---|---|
-| `recorder` | `zoom-m4` | レコーダ機種。`--recorder` でも指定可 |
+| `recorder` | `zoom-m4` | 取り込み時の機種の控え(**参照用**。実際に使われるのは `ingest.json` 側) |
 | `ext_lr_map` | `normal` / `swapped` | `normal` = Tr1→L, Tr2→R。配線ミスのセッションは `swapped` |
 | `source` | `ext_only` / `int_only` / `mix` | 最終ファイルの作り方。既定は `ext_only` |
 | `mix_ratio` | 例 `{"ext":0.6,"int":0.4}` | `source=mix` のときだけ使用 |
@@ -114,6 +114,13 @@ output/260802/
 `channel_groups`(例 `{"ext": ["Tr1","Tr2"], "int": ["TrMic"]}`)が、どのトラックがどの系統に
 属するかを表す。2トラックで1系統ならモノラル2本を左右に組み、1トラックならそれ自体がステレオ、
 と `merge` が解釈する。
+
+**`--recorder` は `ingest`(と `all`)でしか指定できない。** 取り込み時に決まった機種と
+`channel_groups` は `output/{date}/ingest.json` に記録され、`merge` 以降の各段はそれを読む。
+下流で機種を指定し直せると取り込み時と食い違う恐れがあるうえ、系統名をコード側に
+埋め込む必要が生じるため、あえて指定できないようにしてある。`propose --source` や
+`merge/apply --groups` に渡せる値も `ingest.json` の `channel_groups` から決まり、
+未知の系統を指定すると利用可能な一覧を添えて停止する。
 
 ## 品質について
 
