@@ -89,10 +89,14 @@ def scan(root: Path, date: str, profile: RecorderProfile | None = None) -> list[
     if not discovered:
         raise PipelineError(f"{root} に {date}_XXX.TAKE フォルダが見つかりません")
 
+    # 起点は「見つかった最小の番号」であって 001 ではない。同じ日に複数のオケの練習が
+    # 入る場合や、失敗したデータを除外した場合、TAKE番号が 001 から始まらないことが
+    # 正常にありうるため。ここで検出したいのは「連番の途中が欠けていること」だけで、
+    # 先頭が 001 でないこと自体は異常ではない。
     numbers = [t.number for t in discovered]
-    expected = list(range(1, 1 + len(numbers)))
+    expected = list(range(numbers[0], numbers[0] + len(numbers)))
     if numbers != expected:
-        log(f"警告: TAKE番号が 001 から連番になっていません {numbers}(欠損の可能性あり)")
+        log(f"警告: TAKE番号が連続していません {numbers}(欠損の可能性あり)")
 
     takes: list[Take] = []
     ref: dict | None = None
