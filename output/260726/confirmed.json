@@ -1,0 +1,58 @@
+[
+  {
+    "index": 1,
+    "start": "00:00:00",
+    "end": "00:06:45",
+    "label": "音出し(推定)",
+    "action": "remove",
+    "confidence": 0.77
+  },
+  {
+    "index": 2,
+    "start": "00:06:45",
+    "end": "01:07:04",
+    "label": "合奏1(推定)",
+    "action": "keep",
+    "confidence": 0.71
+  },
+  {
+    "index": 3,
+    "start": "01:07:04",
+    "end": "01:12:23",
+    "label": "休憩(推定)",
+    "action": "remove",
+    "confidence": 0.84
+  },
+  {
+    "index": 4,
+    "start": "01:12:23",
+    "end": "02:17:27",
+    "label": "合奏2(推定)",
+    "action": "keep",
+    "confidence": 0.67
+  },
+  {
+    "index": 5,
+    "start": "02:17:27",
+    "end": "02:22:59",
+    "label": "休憩(推定)",
+    "action": "remove",
+    "confidence": 0.73
+  },
+  {
+    "index": 6,
+    "start": "02:22:59",
+    "end": "03:10:06",
+    "label": "合奏3(推定)",
+    "action": "keep",
+    "confidence": 0.68
+  },
+  {
+    "index": 7,
+    "start": "03:10:06",
+    "end": "03:11:16",
+    "label": "片付け(推定)",
+    "action": "remove",
+    "confidence": 0.52
+  }
+]
