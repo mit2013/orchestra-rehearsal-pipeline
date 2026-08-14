@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -48,7 +48,13 @@ class RecorderProfile:
     needs_take_concat: bool = True
 
     def discover(self, root_dir: Path, date: str) -> list[TakeInfo]:
-        """指定ディレクトリ・日付から、TAKE単位のファイル群を発見する。"""
+        """指定ディレクトリ・日付から、TAKE単位のファイル群を発見する。
+
+        1件も見つからない場合は、その機種のファイル配置に即した説明を含む
+        `PipelineError` を送出すること。何をどこに探しに行ったのかは機種ごとに
+        まったく違う(M4はTAKEフォルダ、F3はルート直下のファイル、single-fileは
+        単一ファイル)ため、メッセージは呼び出し側ではなく各プロファイルが持つ。
+        """
         raise NotImplementedError
 
     # -- 以下は共通のヘルパ ------------------------------------------------

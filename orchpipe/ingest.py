@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .recorder_profiles import RecorderProfile, TakeInfo, get_profile
@@ -85,9 +85,11 @@ def _expected_channels(tracks: list[str]) -> int:
 def scan(root: Path, date: str, profile: RecorderProfile | None = None) -> list[Take]:
     """TAKEを番号順(=時系列順)に走査・検証して返す。"""
     profile = profile or get_profile("zoom-m4")
+    # 「何を探したか」は機種ごとに違うので、見つからないときのメッセージは
+    # プロファイル側が出す。ここは念のための一般的な保険にとどめる。
     discovered: list[TakeInfo] = profile.discover(root, date)
     if not discovered:
-        raise PipelineError(f"{root} に {date}_XXX.TAKE フォルダが見つかりません")
+        raise PipelineError(f"{root} に日付 {date} の TAKE が見つかりません(機種: {profile.name})")
 
     # 起点は「見つかった最小の番号」であって 001 ではない。同じ日に複数のオケの練習が
     # 入る場合や、失敗したデータを除外した場合、TAKE番号が 001 から始まらないことが

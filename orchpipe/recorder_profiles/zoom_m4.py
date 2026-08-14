@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..util import PipelineError
 from .base import RecorderProfile, TakeInfo
 
 TAKE_DIR_RE = re.compile(r"^(?P<date>\d{6})_(?P<num>\d{3})\.TAKE$")
@@ -53,4 +54,6 @@ class ZoomM4Profile(RecorderProfile):
                     files={t: d / f"{stem}_{t}.WAV" for t in self.track_names},
                 )
             )
+        if not takes:
+            raise PipelineError(f"{root_dir} に {date}_XXX.TAKE フォルダが見つかりません")
         return takes
