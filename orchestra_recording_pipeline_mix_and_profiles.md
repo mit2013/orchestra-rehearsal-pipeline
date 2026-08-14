@@ -22,7 +22,6 @@
 
 ```json
 {
-  "recorder": "zoom-m4",
   "ext_lr_map": "normal",
   "source": "ext_only",
   "mix_ratio": {"ext": 0.6, "int": 0.4}
