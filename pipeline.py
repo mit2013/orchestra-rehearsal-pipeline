@@ -9,11 +9,13 @@
     # session_config.json を確認・編集 (source, mix_ratio, ext_lr_map)
     python pipeline.py normalize --date 260802
     python pipeline.py mix       --date 260802
+    python pipeline.py export    --date 260802
 
     python pipeline.py all     --date 260802 --splits 2   # ingest+merge+propose を通しで
 
 スコープは 取り込み → チャンネル結合 → TAKE連結 → 不要区間の候補提案 → 確定後のトリミング
-→ 正規化 → ミックス。曲目単位エクスポート・MP3タグ・アップロード・通知は次フェーズ。
+→ 正規化 → ミックス → 曲目単位エクスポート(WAV/MP3・タグ埋め込み)。
+アップロード・通知・ダイジェスト版は次フェーズ。
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pathlib import Path
 
 from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
+from orchpipe import export as export_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
 from orchpipe import merge as merge_mod
@@ -100,7 +103,7 @@ def cmd_ingest(args) -> None:
     outdir = out_dir(args.root, args.date)
     profile = get_profile(args.recorder or DEFAULT_PROFILE)
     ingest_mod.run_ingest(args.root, args.date, outdir, profile)
-    config_mod.ensure(outdir)
+    config_mod.ensure(outdir, args.root)
 
 
 def cmd_merge(args) -> None:
@@ -227,6 +230,17 @@ def cmd_mix(args) -> None:
         print(f"  {p.name}")
 
 
+def cmd_export(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    tracks = export_mod.run_export(outdir, args.date, cfg, force=args.force)
+    print()
+    print(f"=== エクスポート ({args.date}) ===")
+    for t in tracks:
+        print(f"  {t.number}. {t.title:<6} {t.wav.name}  /  {t.mp3.name}")
+    print(f"\n  出力先: {outdir / 'export'}")
+
+
 def cmd_all(args) -> None:
     cmd_ingest(args)
     cmd_merge(args)
@@ -291,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--safe-peak", type=float, default=mix_mod.SAFE_PEAK_DB,
                     help="合成後に超えてはならないピーク [dBFS]")
     sp.set_defaults(func=cmd_mix)
+
+    sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
+    sp.set_defaults(func=cmd_export)
 
     sp = with_recorder(common(sub.add_parser("all", help="ingest + merge + propose を通しで実行")))
     sp.add_argument("--splits", type=int, default=None)

@@ -7,7 +7,8 @@
       "ext_lr_map": "normal",
       "normalize_scope": "date",
       "source": "ext_only",
-      "mix_ratio": {"ext": 0.6, "int": 0.4}
+      "mix_ratio": {"ext": 0.6, "int": 0.4},
+      "orchestra": "Windrose Sinfonie Orchester"
     }
 
 レコーダ機種はここでは持たない。取り込み時に決まる情報であり、`ingest.json` の
@@ -23,6 +24,11 @@
                 個別のゲインを求める(ブロック間の相対音量は失われる)。
 - `source`    : "ext_only" / "int_only" / "mix"(既定は ext_only)
 - `mix_ratio` : source が "mix" のときだけ使う。比率は今後試す前提で固定しない。
+- `orchestra` : MP3タグに埋め込む団体名。`ingest` 時にプロジェクト直下の
+                `pipeline_defaults.json` からコピーする。既に値があれば上書きしない。
+                ある時期は同じ団体の練習が続く運用なので、既定値を変えたいときは
+                `pipeline_defaults.json` を書き換えれば以降の新規 `ingest` に反映される。
+                特定の日付だけ別団体にしたい場合はその日付の値を直接編集する。
 """
 
 from __future__ import annotations
@@ -36,6 +42,9 @@ LR_MAPS = ("normal", "swapped")
 SOURCES = ("ext_only", "int_only", "mix")
 NORMALIZE_SCOPES = ("date", "block")
 
+DEFAULTS_NAME = "pipeline_defaults.json"
+FALLBACK_ORCHESTRA = "Windrose Sinfonie Orchester"
+
 CONFIG_NAME = "session_config.json"
 
 
@@ -45,6 +54,7 @@ class SessionConfig:
     normalize_scope: str = "date"
     source: str = "ext_only"
     mix_ratio: dict[str, float] = field(default_factory=lambda: {"ext": 0.6, "int": 0.4})
+    orchestra: str = FALLBACK_ORCHESTRA
 
     def to_json(self) -> dict:
         return {
@@ -52,6 +62,7 @@ class SessionConfig:
             "normalize_scope": self.normalize_scope,
             "source": self.source,
             "mix_ratio": {k: float(v) for k, v in self.mix_ratio.items()},
+            "orchestra": self.orchestra,
         }
 
     def validate(self) -> None:
@@ -82,6 +93,8 @@ class SessionConfig:
                 ) from None
             if v < 0:
                 raise PipelineError(f"{CONFIG_NAME}: mix_ratio.{key} は 0 以上である必要があります")
+        if not str(self.orchestra).strip():
+            raise PipelineError(f"{CONFIG_NAME}: orchestra が空です")
         if self.source == "mix" and sum(float(v) for v in self.mix_ratio.values()) <= 0:
             raise PipelineError(f"{CONFIG_NAME}: source=mix なのに mix_ratio がすべて 0 です")
 
@@ -111,20 +124,47 @@ def load(outdir: Path) -> SessionConfig:
         normalize_scope=data.get("normalize_scope", default.normalize_scope),
         source=data.get("source", default.source),
         mix_ratio=data.get("mix_ratio", default.mix_ratio),
+        orchestra=data.get("orchestra", default.orchestra),
     )
     cfg.validate()
     return cfg
 
 
-def ensure(outdir: Path, force: bool = False) -> SessionConfig:
-    """`ingest` 時に既定値で生成する。既存ファイルは上書きしない。"""
+def load_project_defaults(root: Path) -> dict:
+    """プロジェクト直下の `pipeline_defaults.json` を読む。無ければ組み込みの既定値。"""
+    p = root / DEFAULTS_NAME
+    if not p.exists():
+        return {"orchestra": FALLBACK_ORCHESTRA}
+    data = read_json(p)
+    if not isinstance(data, dict):
+        raise PipelineError(f"{DEFAULTS_NAME} はオブジェクトである必要があります")
+    return {"orchestra": data.get("orchestra", FALLBACK_ORCHESTRA)}
+
+
+def ensure(outdir: Path, root: Path, force: bool = False) -> SessionConfig:
+    """`ingest` 時に既定値で生成する。既存ファイルの既存の値は上書きしない。
+
+    既存ファイルに `orchestra` が無い場合だけは、`pipeline_defaults.json` の値を
+    書き足す(「初回のみコピーする」という指示のため。値があれば触らない)。
+    """
     p = config_path(outdir)
+    defaults = load_project_defaults(root)
+
     if p.exists() and not force:
+        raw = read_json(p)
         cfg = load(outdir)
-        log(f"既存の {CONFIG_NAME} を使用: source={cfg.source}, ext_lr_map={cfg.ext_lr_map}")
+        if "orchestra" not in raw:
+            cfg.orchestra = defaults["orchestra"]
+            cfg.validate()
+            write_json(p, cfg.to_json())
+            log(f"既存の {CONFIG_NAME} に orchestra={cfg.orchestra!r} を追記しました")
+        else:
+            log(f"既存の {CONFIG_NAME} を使用: source={cfg.source}, "
+                f"ext_lr_map={cfg.ext_lr_map}, orchestra={cfg.orchestra!r}")
         return cfg
-    cfg = SessionConfig()
+
+    cfg = SessionConfig(orchestra=defaults["orchestra"])
     cfg.validate()
     write_json(p, cfg.to_json())
-    log(f"{CONFIG_NAME} を既定値で作成しました: {p}")
+    log(f"{CONFIG_NAME} を既定値で作成しました (orchestra={cfg.orchestra!r}): {p}")
     return cfg

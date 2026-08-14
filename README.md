@@ -1,16 +1,16 @@
 # アマオケ練習録音 自動編集パイプライン
 
 ZOOM M4 MicTrak の 4ch/32bit float 録音を、取り込み → チャンネル結合 → TAKE連結 →
-不要区間(音出し・休憩・片付け)の候補提案 → 確認後のトリミング → 正規化 → ミックス
-まで自動化する。
+不要区間(音出し・休憩・片付け)の候補提案 → 確認後のトリミング → 正規化 → ミックス →
+曲目単位エクスポート(WAV/MP3・タグ埋め込み)まで自動化する。
 
-曲目単位エクスポート・MP3タグ埋め込み・クラウドアップロード・通知は次フェーズ。
+クラウドアップロード・共有リンク生成・通知文言生成・ダイジェスト版作成は次フェーズ。
 
 ## セットアップ
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install numpy scipy soundfile matplotlib
+.venv/bin/pip install numpy scipy soundfile matplotlib mutagen
 ```
 
 ffmpeg / ffprobe が PATH にあること(Homebrew 版で確認済み)。
@@ -30,6 +30,7 @@ ffmpeg / ffprobe が PATH にあること(Homebrew 版で確認済み)。
 
 .venv/bin/python pipeline.py normalize --date 260802        # ピーク正規化 (-1 dBFS)
 .venv/bin/python pipeline.py mix       --date 260802        # 最終ファイル生成
+.venv/bin/python pipeline.py export    --date 260802        # 配布用 WAV/MP3 + タグ
 ```
 
 `all` で ingest + merge + propose を通しで実行できる。中間ファイルは残るので、
@@ -52,8 +53,41 @@ output/260802/
   trimmed/
     01_合奏1_ext.wav        # apply の出力(無加工)
     01_合奏1_ext_norm.wav   # normalize の出力(ピーク -1 dBFS)
-    01_合奏1_final.wav      # mix の出力(この先のエクスポート元)
+    01_合奏1_final.wav      # mix の出力(エクスポート元)
+  export/
+    260802_前半.wav         # 配布用 WAV(_final.wav とビット同一)
+    260802_前半.mp3         # 配布用 MP3(320kbps、ID3タグ付き)
 ```
+
+## エクスポート(曲目単位)
+
+1合奏ブロック = 1トラックとして書き出す。トラックタイトルはブロック数から自動採番する:
+
+| ブロック数 | タイトル |
+|---|---|
+| 2(休憩1回) | 前半 / 後半 |
+| 3(休憩2回) | 前半 / 中盤 / 後半 |
+| その他 | コマ1 / コマ2 / … |
+
+ブロック数は `confirmed.json` の `action: keep` の区間数で判定し、`*_final.wav` の本数と
+食い違っていればエラーで止める(`mix` のやり直し漏れを検出するため)。
+
+WAV は 32bit float のまま実体コピーするので `_final.wav` とビット単位で同一。
+MP3 は `libmp3lame` 320kbps 固定で、ID3タグを `mutagen` で書き込む:
+
+| タグ | 値 | 例 |
+|---|---|---|
+| `TALB` アルバム | 日付文字列 | `260802` |
+| `TIT2` タイトル | 自動採番 | `前半` |
+| `TPE1` / `TPE2` アーティスト | `session_config.json` の `orchestra` | `Windrose Sinfonie Orchester` |
+| `TRCK` トラック番号 | 通し番号/総数 | `1/2` |
+| `TDRC` 年 | 日付の先頭2桁に `20` を前置 | `2026` |
+
+団体名の既定値はプロジェクト直下の `pipeline_defaults.json` に置く。`ingest` 時に
+`session_config.json` へコピーされ、**既に値があれば上書きしない**。ある時期は同じ団体の
+練習が続く運用なので、団体が変わったら `pipeline_defaults.json` を書き換えれば以降の
+新規 `ingest` に反映される。特定の日付だけ別団体にしたい場合はその日付の値を直接編集する。
+`pipeline_defaults.json` が無い場合は `Windrose Sinfonie Orchester` にフォールバックする。
 
 ## セッション設定 (`session_config.json`)
 
