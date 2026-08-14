@@ -10,6 +10,7 @@
     python pipeline.py normalize --date 260802
     python pipeline.py mix       --date 260802
     python pipeline.py export    --date 260802
+    python pipeline.py box-upload --date 260802
 
     python pipeline.py all     --date 260802 --splits 2   # ingest+merge+propose を通しで
 
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
+from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
@@ -241,6 +243,23 @@ def cmd_export(args) -> None:
     print(f"\n  出力先: {outdir / 'export'}")
 
 
+def cmd_box_upload(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    r = box_mod.run_box_upload(args.root, args.date, outdir, cfg, auth_timeout=args.auth_timeout)
+    print()
+    print(f"=== Box アップロード完了 ({args.date}) ===")
+    print(f"  フォルダ      : {r['folder_name']} (id={r['folder_id']}, "
+          f"{'新規作成' if r['created'] else '既存を再利用'})")
+    print(f"  アップロード  : {r['n_uploaded']} ファイル / フォルダ内の総ファイル数 {r['n_in_folder']}")
+    print(f"  パスワード保護: {r['password_enabled']}")
+    print(f"  ダウンロード可: {r['can_download']}  (False であること)")
+    print(f"  アクセス範囲  : {r['access']}")
+    print()
+    print(f"  共有リンク: {r['url']}")
+    print(f"  パスワード: {r['password']}")
+
+
 def cmd_all(args) -> None:
     cmd_ingest(args)
     cmd_merge(args)
@@ -308,6 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
     sp.set_defaults(func=cmd_export)
+
+    sp = common(sub.add_parser("box-upload", help="MP3 を Box にアップロードし共有リンクを発行"))
+    sp.add_argument("--auth-timeout", type=float, default=300.0,
+                    help="初回認証でブラウザ操作を待つ秒数")
+    sp.set_defaults(func=cmd_box_upload)
 
     sp = with_recorder(common(sub.add_parser("all", help="ingest + merge + propose を通しで実行")))
     sp.add_argument("--splits", type=int, default=None)

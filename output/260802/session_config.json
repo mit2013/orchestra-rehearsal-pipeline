@@ -6,5 +6,7 @@
     "ext": 0.6,
     "int": 0.4
   },
-  "orchestra": "Windrose Sinfonie Orchester"
+  "orchestra": "Windrose Sinfonie Orchester",
+  "concert_date": "{concert_date}",
+  "box_parent_folder_id": "BOX_FOLDER_NAME"
 }

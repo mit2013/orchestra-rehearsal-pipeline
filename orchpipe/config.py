@@ -8,7 +8,9 @@
       "normalize_scope": "date",
       "source": "ext_only",
       "mix_ratio": {"ext": 0.6, "int": 0.4},
-      "orchestra": "Windrose Sinfonie Orchester"
+      "orchestra": "Windrose Sinfonie Orchester",
+      "concert_date": "{concert_date}",
+      "box_parent_folder_id": ""
     }
 
 レコーダ機種はここでは持たない。取り込み時に決まる情報であり、`ingest.json` の
@@ -29,6 +31,9 @@
                 ある時期は同じ団体の練習が続く運用なので、既定値を変えたいときは
                 `pipeline_defaults.json` を書き換えれば以降の新規 `ingest` に反映される。
                 特定の日付だけ別団体にしたい場合はその日付の値を直接編集する。
+- `concert_date` / `box_parent_folder_id`:
+                Box アップロード用。`orchestra` と同じく `pipeline_defaults.json` から
+                `ingest` 時にコピーし、既に値があれば上書きしない。
 """
 
 from __future__ import annotations
@@ -45,6 +50,9 @@ NORMALIZE_SCOPES = ("date", "block")
 DEFAULTS_NAME = "pipeline_defaults.json"
 FALLBACK_ORCHESTRA = "Windrose Sinfonie Orchester"
 
+# pipeline_defaults.json から session_config.json へ引き継ぐキーと、その既定値。
+INHERITED_DEFAULTS = {"orchestra": FALLBACK_ORCHESTRA, "concert_date": "", "box_parent_folder_id": ""}
+
 CONFIG_NAME = "session_config.json"
 
 
@@ -55,6 +63,8 @@ class SessionConfig:
     source: str = "ext_only"
     mix_ratio: dict[str, float] = field(default_factory=lambda: {"ext": 0.6, "int": 0.4})
     orchestra: str = FALLBACK_ORCHESTRA
+    concert_date: str = ""
+    box_parent_folder_id: str = ""
 
     def to_json(self) -> dict:
         return {
@@ -63,6 +73,8 @@ class SessionConfig:
             "source": self.source,
             "mix_ratio": {k: float(v) for k, v in self.mix_ratio.items()},
             "orchestra": self.orchestra,
+            "concert_date": self.concert_date,
+            "box_parent_folder_id": self.box_parent_folder_id,
         }
 
     def validate(self) -> None:
@@ -125,6 +137,8 @@ def load(outdir: Path) -> SessionConfig:
         source=data.get("source", default.source),
         mix_ratio=data.get("mix_ratio", default.mix_ratio),
         orchestra=data.get("orchestra", default.orchestra),
+        concert_date=str(data.get("concert_date", default.concert_date)),
+        box_parent_folder_id=str(data.get("box_parent_folder_id", default.box_parent_folder_id)),
     )
     cfg.validate()
     return cfg
@@ -134,11 +148,11 @@ def load_project_defaults(root: Path) -> dict:
     """プロジェクト直下の `pipeline_defaults.json` を読む。無ければ組み込みの既定値。"""
     p = root / DEFAULTS_NAME
     if not p.exists():
-        return {"orchestra": FALLBACK_ORCHESTRA}
+        return dict(INHERITED_DEFAULTS)
     data = read_json(p)
     if not isinstance(data, dict):
         raise PipelineError(f"{DEFAULTS_NAME} はオブジェクトである必要があります")
-    return {"orchestra": data.get("orchestra", FALLBACK_ORCHESTRA)}
+    return {k: str(data.get(k, v)) for k, v in INHERITED_DEFAULTS.items()}
 
 
 def ensure(outdir: Path, root: Path, force: bool = False) -> SessionConfig:
@@ -153,18 +167,22 @@ def ensure(outdir: Path, root: Path, force: bool = False) -> SessionConfig:
     if p.exists() and not force:
         raw = read_json(p)
         cfg = load(outdir)
-        if "orchestra" not in raw:
-            cfg.orchestra = defaults["orchestra"]
+        missing = [k for k in INHERITED_DEFAULTS if k not in raw]
+        if missing:
+            for k in missing:
+                setattr(cfg, k, defaults[k])
             cfg.validate()
             write_json(p, cfg.to_json())
-            log(f"既存の {CONFIG_NAME} に orchestra={cfg.orchestra!r} を追記しました")
+            log(f"既存の {CONFIG_NAME} に " +
+                ", ".join(f"{k}={defaults[k]!r}" for k in missing) + " を追記しました")
         else:
             log(f"既存の {CONFIG_NAME} を使用: source={cfg.source}, "
-                f"ext_lr_map={cfg.ext_lr_map}, orchestra={cfg.orchestra!r}")
+                f"ext_lr_map={cfg.ext_lr_map}, orchestra={cfg.orchestra!r}, "
+                f"concert_date={cfg.concert_date!r}")
         return cfg
 
-    cfg = SessionConfig(orchestra=defaults["orchestra"])
+    cfg = SessionConfig(**defaults)
     cfg.validate()
     write_json(p, cfg.to_json())
-    log(f"{CONFIG_NAME} を既定値で作成しました (orchestra={cfg.orchestra!r}): {p}")
+    log(f"{CONFIG_NAME} を既定値で作成しました (orchestra={cfg.orchestra!r}, concert_date={cfg.concert_date!r}): {p}")
     return cfg
