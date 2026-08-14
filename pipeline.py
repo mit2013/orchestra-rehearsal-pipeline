@@ -100,7 +100,7 @@ def cmd_ingest(args) -> None:
     outdir = out_dir(args.root, args.date)
     profile = get_profile(args.recorder or DEFAULT_PROFILE)
     ingest_mod.run_ingest(args.root, args.date, outdir, profile)
-    config_mod.ensure(outdir, profile.name)
+    config_mod.ensure(outdir)
 
 
 def cmd_merge(args) -> None:

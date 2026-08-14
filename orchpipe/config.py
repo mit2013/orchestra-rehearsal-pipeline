@@ -4,11 +4,14 @@
 手で編集する。パイプラインは勝手に上書きしない。
 
     {
-      "recorder": "zoom-m4",
       "ext_lr_map": "normal",
       "source": "ext_only",
       "mix_ratio": {"ext": 0.6, "int": 0.4}
     }
+
+レコーダ機種はここでは持たない。取り込み時に決まる情報であり、`ingest.json` の
+`recorder` / `channel_groups` が唯一の情報源である。二重に持つと食い違いうるため、
+このファイルは「取り込み後にユーザーが調整する設定」だけを持つ。
 
 - `ext_lr_map`: "normal" (Tr1=L, Tr2=R) / "swapped" (Tr1=R, Tr2=L)
                 配線ミスは録音セッション単位で起きるので日付ごとに上書きできる。
@@ -31,14 +34,12 @@ CONFIG_NAME = "session_config.json"
 
 @dataclass
 class SessionConfig:
-    recorder: str = "zoom-m4"
     ext_lr_map: str = "normal"
     source: str = "ext_only"
     mix_ratio: dict[str, float] = field(default_factory=lambda: {"ext": 0.6, "int": 0.4})
 
     def to_json(self) -> dict:
         return {
-            "recorder": self.recorder,
             "ext_lr_map": self.ext_lr_map,
             "source": self.source,
             "mix_ratio": {k: float(v) for k, v in self.mix_ratio.items()},
@@ -90,8 +91,8 @@ def load(outdir: Path) -> SessionConfig:
     if not isinstance(data, dict):
         raise PipelineError(f"{CONFIG_NAME} はオブジェクトである必要があります")
     default = SessionConfig()
+    # 旧フォーマットに残っている "recorder" キーは無視する(ingest.json が情報源)。
     cfg = SessionConfig(
-        recorder=data.get("recorder", default.recorder),
         ext_lr_map=data.get("ext_lr_map", default.ext_lr_map),
         source=data.get("source", default.source),
         mix_ratio=data.get("mix_ratio", default.mix_ratio),
@@ -100,14 +101,14 @@ def load(outdir: Path) -> SessionConfig:
     return cfg
 
 
-def ensure(outdir: Path, recorder: str, force: bool = False) -> SessionConfig:
+def ensure(outdir: Path, force: bool = False) -> SessionConfig:
     """`ingest` 時に既定値で生成する。既存ファイルは上書きしない。"""
     p = config_path(outdir)
     if p.exists() and not force:
         cfg = load(outdir)
         log(f"既存の {CONFIG_NAME} を使用: source={cfg.source}, ext_lr_map={cfg.ext_lr_map}")
         return cfg
-    cfg = SessionConfig(recorder=recorder)
+    cfg = SessionConfig()
     cfg.validate()
     write_json(p, cfg.to_json())
     log(f"{CONFIG_NAME} を既定値で作成しました: {p}")

@@ -61,7 +61,6 @@ output/260802/
 
 ```json
 {
-  "recorder": "zoom-m4",
   "ext_lr_map": "normal",
   "source": "ext_only",
   "mix_ratio": {"ext": 0.6, "int": 0.4}
@@ -70,10 +69,14 @@ output/260802/
 
 | キー | 値 | 意味 |
 |---|---|---|
-| `recorder` | `zoom-m4` | 取り込み時の機種の控え(**参照用**。実際に使われるのは `ingest.json` 側) |
 | `ext_lr_map` | `normal` / `swapped` | `normal` = Tr1→L, Tr2→R。配線ミスのセッションは `swapped` |
 | `source` | `ext_only` / `int_only` / `mix` | 最終ファイルの作り方。既定は `ext_only` |
 | `mix_ratio` | 例 `{"ext":0.6,"int":0.4}` | `source=mix` のときだけ使用 |
+
+**レコーダ機種はこのファイルには持たない。** 機種と `channel_groups` は取り込み時に決まる
+情報で、`ingest.json` が唯一の情報源である。二重に持つと食い違いうるため、
+`session_config.json` は「取り込み後にユーザーが調整する設定」だけを持つ。
+(古いファイルに `recorder` キーが残っていても無視される)
 
 `ext_lr_map` は **`merge` の時点で**適用される。それより下流(propose/apply/normalize/mix)は
 常に正しい L/R が揃っている前提でよい。変更したら `merge --groups ext --force` で
