@@ -203,10 +203,12 @@ def cmd_apply(args) -> None:
 def cmd_normalize(args) -> None:
     outdir = out_dir(args.root, args.date)
     recorder, groups = _session_info(args.root, args.date, outdir)
+    cfg = config_mod.load(outdir)
     norm_mod.run_normalize(
         outdir, list(groups),
         target_db=args.target,
         ref_margin=args.ref_margin,
+        scope=cfg.normalize_scope,
         force=args.force,
     )
 

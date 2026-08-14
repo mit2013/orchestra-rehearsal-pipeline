@@ -72,11 +72,20 @@ def norm_path(src: Path) -> Path:
     return src.with_name(src.stem + NORM_SUFFIX + src.suffix)
 
 
+def _reference_window(dur: float, ref_margin: float) -> tuple[float | None, float | None, str]:
+    """基準ピークを測る範囲。中央部分が短すぎるときは全体から測る。"""
+    if dur > 2 * ref_margin + 30.0:
+        span = dur - 2 * ref_margin
+        return ref_margin, span, f"中央 {span/60:.1f}分 (前後 {ref_margin:.0f}秒を除外)"
+    return None, None, f"全体 {dur/60:.1f}分 (短いためマージン除外なし)"
+
+
 def run_normalize(
     outdir: Path,
     groups: list[str],
     target_db: float = TARGET_DB,
     ref_margin: float = 120.0,
+    scope: str = "date",
     force: bool = False,
 ) -> dict[tuple[str, str], Path]:
     trimmed = outdir / "trimmed"
@@ -86,31 +95,65 @@ def run_normalize(
             f"{trimmed} に正規化対象がありません。先に `apply` を実行してください。"
         )
 
-    log(f"正規化開始: {len(files)} ファイル / 目標 {target_db:+.1f} dBFS / 基準除外マージン {ref_margin:.0f}秒")
-    out: dict[tuple[str, str], Path] = {}
+    log(
+        f"正規化開始: {len(files)} ファイル / 目標 {target_db:+.1f} dBFS / "
+        f"基準除外マージン {ref_margin:.0f}秒 / 基準範囲 {scope}"
+    )
 
+    # --- 1. まず全ブロックの基準ピークを測る -------------------------------
+    # scope="date" では系統内の最大ピークが必要なので、書き出す・書き出さないに
+    # かかわらず全ブロックを測っておかないと基準が決まらない。
+    peaks: dict[tuple[str, str], float] = {}
+    windows: dict[tuple[str, str], str] = {}
+    for key, src in sorted(files.items()):
+        dur = probe_audio(src)["duration"]
+        start, span, desc = _reference_window(dur, ref_margin)
+        peaks[key] = measure_peak_db(src, start, span)
+        windows[key] = desc
+
+    # --- 2. ゲインを決める --------------------------------------------------
+    gains: dict[tuple[str, str], float] = {}
+    if scope == "date":
+        # 系統ごとに、全ブロックの本編ピークの最大値を基準にする。同じゲインを
+        # その系統の全ブロックに掛けるので、ブロック間の音量差が元のまま残る。
+        for group in groups:
+            voiced = [(b, p) for (b, g), p in peaks.items() if g == group and p != float("-inf")]
+            if not voiced:
+                log(f"  [{group}] 有音のブロックがありません。この系統はスキップします。")
+                continue
+            ref_block, ref_peak = max(voiced, key=lambda x: x[1])
+            gain = target_db - ref_peak
+            for b, g in peaks:
+                if g == group:
+                    gains[(b, g)] = gain
+            others = ", ".join(
+                f"{b}={p:+.2f}" for b, p in sorted(voiced) if b != ref_block
+            )
+            log(
+                f"  [{group}] 基準ピーク {ref_peak:+.2f} dBFS ← {ref_block} "
+                f"({len(voiced)} ブロック中の最大{'; 他: ' + others if others else ''}) "
+                f"-> 系統共通ゲイン {gain:+.2f} dB"
+            )
+    else:
+        for key, p in peaks.items():
+            if p != float("-inf"):
+                gains[key] = target_db - p
+
+    # --- 3. 適用 ------------------------------------------------------------
+    out: dict[tuple[str, str], Path] = {}
     for (block, group), src in sorted(files.items()):
+        key = (block, group)
         dst = norm_path(src)
-        out[(block, group)] = dst
+        out[key] = dst
+        if key not in gains:
+            log(f"  スキップ(無音): {src.name}")
+            continue
         if dst.exists() and not force:
             log(f"  スキップ(既存): {dst.name}")
             continue
 
-        dur = probe_audio(src)["duration"]
-        # 中央部分が短すぎると基準が不安定なので、その場合は全体から測る。
-        if dur > 2 * ref_margin + 30.0:
-            start, span = ref_margin, dur - 2 * ref_margin
-            scope = f"中央 {span/60:.1f}分 (前後 {ref_margin:.0f}秒を除外)"
-        else:
-            start, span = None, None
-            scope = f"全体 {dur/60:.1f}分 (短いためマージン除外なし)"
-
-        peak = measure_peak_db(src, start, span)
-        if peak == float("-inf"):
-            log(f"  スキップ(無音): {src.name}")
-            continue
-
-        gain = target_db - peak
+        gain = gains[key]
+        peak = peaks[key]
         run(
             [
                 FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y",
@@ -119,7 +162,10 @@ def run_normalize(
                 "-c:a", "pcm_f32le", "-rf64", "auto",
                 str(dst),
             ],
-            desc=f"  {src.name} -> {dst.name}  基準={scope}  ピーク {peak:+.2f} dBFS, ゲイン {gain:+.2f} dB",
+            desc=(
+                f"  {src.name} -> {dst.name}  基準={windows[key]}  "
+                f"自ブロックのピーク {peak:+.2f} dBFS, 適用ゲイン {gain:+.2f} dB"
+            ),
         )
 
         # 適用範囲は全体なので、除外した guard 部分が 0 dBFS を超えることがありうる。

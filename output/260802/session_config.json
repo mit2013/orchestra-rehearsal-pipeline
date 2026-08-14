@@ -1,5 +1,6 @@
 {
   "ext_lr_map": "normal",
+  "normalize_scope": "date",
   "source": "ext_only",
   "mix_ratio": {
     "ext": 0.6,

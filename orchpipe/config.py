@@ -5,6 +5,7 @@
 
     {
       "ext_lr_map": "normal",
+      "normalize_scope": "date",
       "source": "ext_only",
       "mix_ratio": {"ext": 0.6, "int": 0.4}
     }
@@ -15,6 +16,11 @@
 
 - `ext_lr_map`: "normal" (Tr1=L, Tr2=R) / "swapped" (Tr1=R, Tr2=L)
                 配線ミスは録音セッション単位で起きるので日付ごとに上書きできる。
+- `normalize_scope`: "date"(既定)/ "block"
+                正規化の基準をどの範囲で取るか。"date" は日付・系統ごとに単一の
+                ゲインを求めて全ブロックに適用するので、ブロック間の音量バランスが
+                元の演奏どおりに保たれる。"block" は従来どおりブロックごとに
+                個別のゲインを求める(ブロック間の相対音量は失われる)。
 - `source`    : "ext_only" / "int_only" / "mix"(既定は ext_only)
 - `mix_ratio` : source が "mix" のときだけ使う。比率は今後試す前提で固定しない。
 """
@@ -28,6 +34,7 @@ from .util import PipelineError, log, read_json, write_json
 
 LR_MAPS = ("normal", "swapped")
 SOURCES = ("ext_only", "int_only", "mix")
+NORMALIZE_SCOPES = ("date", "block")
 
 CONFIG_NAME = "session_config.json"
 
@@ -35,12 +42,14 @@ CONFIG_NAME = "session_config.json"
 @dataclass
 class SessionConfig:
     ext_lr_map: str = "normal"
+    normalize_scope: str = "date"
     source: str = "ext_only"
     mix_ratio: dict[str, float] = field(default_factory=lambda: {"ext": 0.6, "int": 0.4})
 
     def to_json(self) -> dict:
         return {
             "ext_lr_map": self.ext_lr_map,
+            "normalize_scope": self.normalize_scope,
             "source": self.source,
             "mix_ratio": {k: float(v) for k, v in self.mix_ratio.items()},
         }
@@ -50,6 +59,11 @@ class SessionConfig:
             raise PipelineError(
                 f"{CONFIG_NAME}: ext_lr_map は {' / '.join(LR_MAPS)} のいずれかです"
                 f"(実際: {self.ext_lr_map!r})"
+            )
+        if self.normalize_scope not in NORMALIZE_SCOPES:
+            raise PipelineError(
+                f"{CONFIG_NAME}: normalize_scope は {' / '.join(NORMALIZE_SCOPES)} のいずれかです"
+                f"(実際: {self.normalize_scope!r})"
             )
         if self.source not in SOURCES:
             raise PipelineError(
@@ -94,6 +108,7 @@ def load(outdir: Path) -> SessionConfig:
     # 旧フォーマットに残っている "recorder" キーは無視する(ingest.json が情報源)。
     cfg = SessionConfig(
         ext_lr_map=data.get("ext_lr_map", default.ext_lr_map),
+        normalize_scope=data.get("normalize_scope", default.normalize_scope),
         source=data.get("source", default.source),
         mix_ratio=data.get("mix_ratio", default.mix_ratio),
     )
