@@ -29,7 +29,10 @@ TOKENS_NAME = ".google_tokens.json"
 ENV_NAME = ".env"
 
 FOLDER_MIME = "application/vnd.google-apps.folder"
-ROOT_FOLDER_NAME = "練習録音"
+# 自動化専用であることが名前から分かるようにしている。
+ROOT_FOLDER_NAME = "orchestra-recording-pipeline"
+# 3階層時代のルート名。見つかったらリネームして引き継ぐ(ID は変わらない)。
+LEGACY_ROOT_NAME = "練習録音"
 
 # 1.8GB 級の WAV を上げるので、必ず再開可能アップロードを使う。
 # 回線が切れたときに捨てる量が減るよう、チャンクは控えめにする。
@@ -152,7 +155,11 @@ class DriveClient:
             q.append(f"mimeType != '{FOLDER_MIME}'")
         resp = (
             self.service.files()
-            .list(q=" and ".join(q), fields="files(id,name,mimeType)", pageSize=10)
+            .list(
+                q=" and ".join(q),
+                fields="files(id,name,mimeType,md5Checksum,size)",
+                pageSize=10,
+            )
             .execute()
         )
         files = resp.get("files", [])
@@ -192,6 +199,14 @@ class DriveClient:
                 break
         return out
 
+    def rename_file(self, file_id: str, new_name: str) -> dict:
+        """名前だけ変更する。ID は変わらないので共有リンクもそのまま生きる。"""
+        return (
+            self.service.files()
+            .update(fileId=file_id, body={"name": new_name}, fields="id,name")
+            .execute()
+        )
+
     def move_file(self, file_id: str, add_parent: str, remove_parent: str) -> dict:
         """親フォルダを付け替える(実体は移動。再アップロードしない)。"""
         return (
@@ -207,11 +222,14 @@ class DriveClient:
 
     # -- アップロード ------------------------------------------------------
 
-    def upload(self, path: Path, drive_name: str, parent_id: str, on_progress=None) -> dict:
+    def upload(
+        self, path: Path, drive_name: str, parent_id: str, on_progress=None, existing=None
+    ) -> dict:
         """再開可能アップロード。同名ファイルがあれば新しいバージョンとして上書きする。"""
         from googleapiclient.http import MediaFileUpload
 
-        existing = self.find_child(drive_name, parent_id, folder=False)
+        if existing is None:
+            existing = self.find_child(drive_name, parent_id, folder=False)
         media = MediaFileUpload(
             str(path), mimetype="audio/wav", chunksize=UPLOAD_CHUNK, resumable=True
         )

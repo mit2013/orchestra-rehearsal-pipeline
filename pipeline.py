@@ -264,25 +264,36 @@ def cmd_box_upload(args) -> None:
 
 def cmd_gdrive_upload(args) -> None:
     outdir = out_dir(args.root, args.date)
-    r = gdrive_mod.run_gdrive_upload(args.root, args.date, outdir, auth_timeout=args.auth_timeout)
+    cfg = config_mod.load(outdir)
+    r = gdrive_mod.run_gdrive_upload(
+        args.root, args.date, outdir, cfg, auth_timeout=args.auth_timeout
+    )
     c = r["created"]
     print()
     print(f"=== Google Drive アップロード完了 ({args.date}) ===")
-    print(f"  フォルダ構成  : 練習録音/{args.date}/{{WAV,MP3}}")
-    for label, key in (("練習録音", "root"), (args.date, "date"), ("WAV", "WAV"), ("MP3", "MP3")):
-        print(f"      {label:<10} {'新規作成' if c[key] else '既存を再利用'}")
-    if r["migrated"]:
-        print(f"  移行          : {len(r['migrated'])} 件を日付フォルダ直下から移動")
-        for name, dest in r["migrated"]:
-            print(f"      {name} -> {dest}/")
+    print(f"  フォルダ構成  : orchestra-recording-pipeline/{r['orchestra_folder']}/"
+          f"{args.date}/{{WAV,MP3}}")
+    labels = (("orchestra-recording-pipeline", "root"), (r["orchestra_folder"], "orchestra"),
+              (args.date, "date"), ("WAV", "WAV"), ("MP3", "MP3"))
+    for label, key in labels:
+        state = "新規作成" if c[key] else "既存を再利用"
+        if key == "root" and r["root_renamed"]:
+            state = "旧名からリネームして引き継ぎ(ID不変)"
+        print(f"      {label:<32} {state}")
+    if r["migrated_dates"]:
+        print(f"  移行(日付フォルダ): {', '.join(r['migrated_dates'])} をフォルダごと団体配下へ移動")
     else:
-        print("  移行          : 対象なし(既に3階層構成)")
-    print(f"  WAV           : {r['n_wav']} 本アップロード / フォルダ内 {r['n_in_wav']} 本")
-    for n in r["wav_names"]:
-        print(f"      {n}")
-    print(f"  MP3           : {r['n_mp3']} 本アップロード / フォルダ内 {r['n_in_mp3']} 本")
-    for n in r["mp3_names"]:
-        print(f"      {n}")
+        print("  移行(日付フォルダ): 対象なし")
+    if r["migrated_files"]:
+        print(f"  移行(ファイル)  : {len(r['migrated_files'])} 件")
+    for label, res, n, in_n in (("WAV", r["wav"], r["n_wav"], r["n_in_wav"]),
+                                ("MP3", r["mp3"], r["n_mp3"], r["n_in_mp3"])):
+        print(f"  {label}: 対象 {n} 本 / フォルダ内 {in_n} 本 "
+              f"(アップロード {len(res['uploaded'])} / スキップ {len(res['skipped'])})")
+        for nm in res["skipped"]:
+            print(f"      スキップ(内容同一): {nm}")
+        for nm in res["uploaded"]:
+            print(f"      アップロード: {nm}")
     print(f"  日付フォルダ直下の残ファイル: {r['n_loose_in_date']} 件 (0 であること)")
     print()
     for label, s in (("日付フォルダ(WAV+MP3、動画担当向け)", r["share_date"]),
