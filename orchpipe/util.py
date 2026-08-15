@@ -147,6 +147,37 @@ def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+ENV_NAME = ".env"
+
+
+def read_env(root: Path) -> dict[str, str]:
+    """`.env` を KEY=VALUE として読む。無ければ空 dict。"""
+    p = root / ENV_NAME
+    if not p.exists():
+        return {}
+    values: dict[str, str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        values[k.strip()] = v.strip().strip('"').strip("'")
+    return values
+
+
+def require_env(root: Path, keys: Sequence[str]) -> list[str]:
+    """必須キーを取り出す。欠けていれば PipelineError。"""
+    values = read_env(root)
+    if not (root / ENV_NAME).exists():
+        raise PipelineError(
+            f"{root / ENV_NAME} がありません。{', '.join(keys)} を記載してください。"
+        )
+    missing = [k for k in keys if not values.get(k)]
+    if missing:
+        raise PipelineError(f"{ENV_NAME} に {', '.join(missing)} がありません")
+    return [values[k] for k in keys]
+
+
 def out_dir(root: Path, date: str) -> Path:
     d = root / "output" / date
     d.mkdir(parents=True, exist_ok=True)

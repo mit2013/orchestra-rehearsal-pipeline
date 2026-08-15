@@ -30,7 +30,7 @@ from pathlib import Path
 
 import requests
 
-from .util import PipelineError, log
+from .util import PipelineError, log, require_env
 
 AUTH_URL = "https://account.box.com/api/oauth2/authorize"
 TOKEN_URL = "https://api.box.com/oauth2/token"
@@ -53,22 +53,8 @@ SIMPLE_UPLOAD_LIMIT = 50 * 1024 * 1024
 
 def load_env(root: Path) -> tuple[str, str]:
     """`.env` から BOX_CLIENT_ID / BOX_CLIENT_SECRET を読む。"""
-    p = root / ENV_NAME
-    if not p.exists():
-        raise PipelineError(
-            f"{p} がありません。BOX_CLIENT_ID と BOX_CLIENT_SECRET を記載してください。"
-        )
-    values: dict[str, str] = {}
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        values[k.strip()] = v.strip().strip('"').strip("'")
-    missing = [k for k in ("BOX_CLIENT_ID", "BOX_CLIENT_SECRET") if not values.get(k)]
-    if missing:
-        raise PipelineError(f"{ENV_NAME} に {', '.join(missing)} がありません")
-    return values["BOX_CLIENT_ID"], values["BOX_CLIENT_SECRET"]
+    a, b = require_env(root, ("BOX_CLIENT_ID", "BOX_CLIENT_SECRET"))
+    return a, b
 
 
 @dataclass

@@ -22,7 +22,7 @@ import stat
 import time
 from pathlib import Path
 
-from .util import PipelineError, log
+from .util import PipelineError, log, require_env
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 TOKENS_NAME = ".google_tokens.json"
@@ -52,22 +52,8 @@ RETRIABLE_ERRORS = (
 
 def load_env(root: Path) -> tuple[str, str]:
     """`.env` から GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET を読む。"""
-    p = root / ENV_NAME
-    if not p.exists():
-        raise PipelineError(
-            f"{p} がありません。GOOGLE_CLIENT_ID と GOOGLE_CLIENT_SECRET を記載してください。"
-        )
-    values: dict[str, str] = {}
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        values[k.strip()] = v.strip().strip('"').strip("'")
-    missing = [k for k in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET") if not values.get(k)]
-    if missing:
-        raise PipelineError(f"{ENV_NAME} に {', '.join(missing)} がありません")
-    return values["GOOGLE_CLIENT_ID"], values["GOOGLE_CLIENT_SECRET"]
+    a, b = require_env(root, ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"))
+    return a, b
 
 
 def _save_credentials(path: Path, creds) -> None:

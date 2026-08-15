@@ -12,12 +12,13 @@
     python pipeline.py export    --date 260802
     python pipeline.py box-upload --date 260802
     python pipeline.py gdrive-upload --date 260802
+    python pipeline.py notify    --date 260802
 
     python pipeline.py all     --date 260802 --splits 2   # ingest+merge+propose を通しで
 
 スコープは 取り込み → チャンネル結合 → TAKE連結 → 不要区間の候補提案 → 確定後のトリミング
 → 正規化 → ミックス → 曲目単位エクスポート(WAV/MP3・タグ埋め込み)。
-アップロード・通知・ダイジェスト版は次フェーズ。
+通知文言の生成と LINE 通知まで。ダイジェスト版は次フェーズ。
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
 from orchpipe import merge as merge_mod
 from orchpipe import mix as mix_mod
+from orchpipe import notify as notify_mod
 from orchpipe import normalize as norm_mod
 from orchpipe import preview as preview_mod
 from orchpipe import segment as seg_mod
@@ -313,6 +315,16 @@ def cmd_gdrive_upload(args) -> None:
         print()
 
 
+def cmd_notify(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    r = notify_mod.run_notify(args.root, args.date, outdir, cfg, send_line=not args.no_line)
+    print()
+    print(r["body"])
+    print(f"  保存先: {r['path']}")
+    print(f"  LINE 通知: {'送信しました' if r['line_ok'] else '未送信 — ' + r['line_note']}")
+
+
 def cmd_all(args) -> None:
     cmd_ingest(args)
     cmd_merge(args)
@@ -390,6 +402,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--auth-timeout", type=float, default=None,
                     help="初回認証でブラウザ操作を待つ秒数(既定は無制限)")
     sp.set_defaults(func=cmd_gdrive_upload)
+
+    sp = common(sub.add_parser("notify", help="通知文言を生成し、LINE で自分宛に送る"))
+    sp.add_argument("--no-line", action="store_true", help="LINE への push を行わない")
+    sp.set_defaults(func=cmd_notify)
 
     sp = with_recorder(common(sub.add_parser("all", help="ingest + merge + propose を通しで実行")))
     sp.add_argument("--splits", type=int, default=None)
