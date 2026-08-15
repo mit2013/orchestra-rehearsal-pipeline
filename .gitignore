@@ -42,6 +42,7 @@ __pycache__/
 .env.*
 !.env.example
 .box_tokens.json
+.google_tokens.json
 
 # ---------------------------------------------------------------------------
 # macOS

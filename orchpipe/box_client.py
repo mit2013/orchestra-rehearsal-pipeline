@@ -182,14 +182,19 @@ def authorize_interactive(client_id: str, client_secret: str, timeout: float = 3
     }
     url = f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 
-    print()
-    print("=" * 70)
-    print("Box の認証が必要です。ブラウザで許可してください。")
-    print("(ブラウザが自動で開かない場合は以下の URL を開いてください)")
-    print()
-    print(url)
-    print("=" * 70)
-    print()
+    # パイプ経由だと stdout がブロックバッファされ、待機中に URL が見えない。
+    # 認可コードの寿命が短くユーザーをすぐ動かす必要があるので、必ず即時に流す。
+    import sys as _sys
+
+    banner = (
+        "\n" + "=" * 70 + "\n"
+        "Box の認証が必要です。ブラウザで許可してください。\n"
+        "(ブラウザが自動で開かない場合は以下の URL を開いてください)\n\n"
+        f"{url}\n" + "=" * 70 + "\n"
+    )
+    print(banner, flush=True)
+    _sys.stderr.write(banner)
+    _sys.stderr.flush()
     log(f"localhost:{CALLBACK_PORT} でコールバックを待機中(最大 {timeout:.0f} 秒)...")
     try:
         webbrowser.open(url)

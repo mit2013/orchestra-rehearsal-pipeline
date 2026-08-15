@@ -11,6 +11,7 @@
     python pipeline.py mix       --date 260802
     python pipeline.py export    --date 260802
     python pipeline.py box-upload --date 260802
+    python pipeline.py gdrive-upload --date 260802
 
     python pipeline.py all     --date 260802 --splits 2   # ingest+merge+propose を通しで
 
@@ -29,6 +30,7 @@ from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
 from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
+from orchpipe import gdrive_upload as gdrive_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
 from orchpipe import merge as merge_mod
@@ -260,6 +262,26 @@ def cmd_box_upload(args) -> None:
     print(f"  パスワード: {r['password']}")
 
 
+def cmd_gdrive_upload(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    r = gdrive_mod.run_gdrive_upload(args.root, args.date, outdir, auth_timeout=args.auth_timeout)
+    perm = r["anyone_permission"] or {}
+    print()
+    print(f"=== Google Drive アップロード完了 ({args.date}) ===")
+    print(f"  フォルダ      : 練習録音/{args.date} (id={r['folder_id']}, "
+          f"{'新規作成' if r['folder_created'] else '既存を再利用'})")
+    print(f"  アップロード  : {r['n_uploaded']} ファイル / フォルダ内の総ファイル数 {r['n_in_folder']}")
+    for n in r["names"]:
+        print(f"      {n}")
+    print(f"  共有権限      : type={perm.get('type')} role={perm.get('role')}  "
+          f"(anyone / reader であること)")
+    print(f"  ダウンロード制限: copyRequiresWriterPermission="
+          f"{r['copy_requires_writer_permission']}  (False であること)")
+    print(f"  canDownload   : {r['capabilities'].get('canDownload')}")
+    print()
+    print(f"  共有リンク: {r['url']}")
+
+
 def cmd_all(args) -> None:
     cmd_ingest(args)
     cmd_merge(args)
@@ -332,6 +354,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--auth-timeout", type=float, default=300.0,
                     help="初回認証でブラウザ操作を待つ秒数")
     sp.set_defaults(func=cmd_box_upload)
+
+    sp = common(sub.add_parser("gdrive-upload", help="WAV を Google Drive にアップロードし共有リンクを発行"))
+    sp.add_argument("--auth-timeout", type=float, default=None,
+                    help="初回認証でブラウザ操作を待つ秒数(既定は無制限)")
+    sp.set_defaults(func=cmd_gdrive_upload)
 
     sp = with_recorder(common(sub.add_parser("all", help="ingest + merge + propose を通しで実行")))
     sp.add_argument("--splits", type=int, default=None)
