@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import subprocess
@@ -106,6 +107,19 @@ def probe_audio(path: Path) -> dict:
         "duration": float(duration),
         "size": int(info.get("format", {}).get("size") or 0),
     }
+
+
+def file_digest(path: Path, algo: str, chunk: int = 4 * 1024 * 1024) -> str:
+    """ファイル全体のハッシュを16進で返す。
+
+    アップロード先に既にある同名ファイルと内容が同じかを判定するために使う。
+    数GBのファイルを扱うので、必ず分割して読む。
+    """
+    h = hashlib.new(algo)
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 # --------------------------------------------------------------------------

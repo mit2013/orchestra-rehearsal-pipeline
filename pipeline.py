@@ -253,7 +253,13 @@ def cmd_box_upload(args) -> None:
     print(f"=== Box アップロード完了 ({args.date}) ===")
     print(f"  フォルダ      : {r['folder_name']} (id={r['folder_id']}, "
           f"{'新規作成' if r['created'] else '既存を再利用'})")
-    print(f"  アップロード  : {r['n_uploaded']} ファイル / フォルダ内の総ファイル数 {r['n_in_folder']}")
+    print(f"  対象          : {r['n_target']} ファイル "
+          f"(アップロード {r['n_uploaded']} / スキップ {r['n_skipped']}) "
+          f"/ フォルダ内の総ファイル数 {r['n_in_folder']}")
+    for nm in r["skipped"]:
+        print(f"      スキップ(内容同一): {nm}")
+    for nm in r["uploaded"]:
+        print(f"      アップロード: {nm}")
     print(f"  パスワード保護: {r['password_enabled']}")
     print(f"  ダウンロード可: {r['can_download']}  (False であること)")
     print(f"  アクセス範囲  : {r['access']}")

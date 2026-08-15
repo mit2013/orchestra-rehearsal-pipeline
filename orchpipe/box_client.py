@@ -316,7 +316,7 @@ class BoxClient:
             resp = self.request(
                 "GET",
                 f"{API_BASE}/folders/{folder_id}/items",
-                params={"limit": 1000, "offset": offset, "fields": "id,name,type,size"},
+                params={"limit": 1000, "offset": offset, "fields": "id,name,type,size,sha1"},
             )
             d = self._check(resp, f"フォルダ {folder_id} の一覧取得", ok=(200,))
             items.extend(d.get("entries", []))

@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import time
 from pathlib import Path
@@ -31,7 +30,7 @@ from .gdrive_client import (
     ROOT_FOLDER_NAME,
     DriveClient,
 )
-from .util import PipelineError, log
+from .util import PipelineError, file_digest, log
 
 DRIVE_ROOT = "root"
 WAV_FOLDER = "WAV"
@@ -53,12 +52,9 @@ def orchestra_folder_name(orchestra: str) -> str:
     return name.replace(" ", "_")
 
 
-def local_md5(path: Path, chunk: int = 4 * 1024 * 1024) -> str:
-    h = hashlib.md5()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(chunk), b""):
-            h.update(block)
-    return h.hexdigest()
+def local_md5(path: Path) -> str:
+    """Drive の md5Checksum と比較するためのローカル MD5。"""
+    return file_digest(path, "md5")
 
 
 def plan_wav(outdir: Path, date: str) -> list[tuple[Path, str]]:
