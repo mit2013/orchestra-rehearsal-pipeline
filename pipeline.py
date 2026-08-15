@@ -265,21 +265,35 @@ def cmd_box_upload(args) -> None:
 def cmd_gdrive_upload(args) -> None:
     outdir = out_dir(args.root, args.date)
     r = gdrive_mod.run_gdrive_upload(args.root, args.date, outdir, auth_timeout=args.auth_timeout)
-    perm = r["anyone_permission"] or {}
+    c = r["created"]
     print()
     print(f"=== Google Drive アップロード完了 ({args.date}) ===")
-    print(f"  フォルダ      : 練習録音/{args.date} (id={r['folder_id']}, "
-          f"{'新規作成' if r['folder_created'] else '既存を再利用'})")
-    print(f"  アップロード  : {r['n_uploaded']} ファイル / フォルダ内の総ファイル数 {r['n_in_folder']}")
-    for n in r["names"]:
+    print(f"  フォルダ構成  : 練習録音/{args.date}/{{WAV,MP3}}")
+    for label, key in (("練習録音", "root"), (args.date, "date"), ("WAV", "WAV"), ("MP3", "MP3")):
+        print(f"      {label:<10} {'新規作成' if c[key] else '既存を再利用'}")
+    if r["migrated"]:
+        print(f"  移行          : {len(r['migrated'])} 件を日付フォルダ直下から移動")
+        for name, dest in r["migrated"]:
+            print(f"      {name} -> {dest}/")
+    else:
+        print("  移行          : 対象なし(既に3階層構成)")
+    print(f"  WAV           : {r['n_wav']} 本アップロード / フォルダ内 {r['n_in_wav']} 本")
+    for n in r["wav_names"]:
         print(f"      {n}")
-    print(f"  共有権限      : type={perm.get('type')} role={perm.get('role')}  "
-          f"(anyone / reader であること)")
-    print(f"  ダウンロード制限: copyRequiresWriterPermission="
-          f"{r['copy_requires_writer_permission']}  (False であること)")
-    print(f"  canDownload   : {r['capabilities'].get('canDownload')}")
+    print(f"  MP3           : {r['n_mp3']} 本アップロード / フォルダ内 {r['n_in_mp3']} 本")
+    for n in r["mp3_names"]:
+        print(f"      {n}")
+    print(f"  日付フォルダ直下の残ファイル: {r['n_loose_in_date']} 件 (0 であること)")
     print()
-    print(f"  共有リンク: {r['url']}")
+    for label, s in (("日付フォルダ(WAV+MP3、動画担当向け)", r["share_date"]),
+                     ("MP3フォルダ(団員個別共有向け)", r["share_mp3"])):
+        p = s["anyone_permission"] or {}
+        print(f"  【{label}】")
+        print(f"    共有権限        : type={p.get('type')} role={p.get('role')}")
+        print(f"    ダウンロード制限: copyRequiresWriterPermission="
+              f"{s['copy_requires_writer_permission']} / canDownload={s['can_download']}")
+        print(f"    共有リンク: {s['url']}")
+        print()
 
 
 def cmd_all(args) -> None:

@@ -192,6 +192,19 @@ class DriveClient:
                 break
         return out
 
+    def move_file(self, file_id: str, add_parent: str, remove_parent: str) -> dict:
+        """親フォルダを付け替える(実体は移動。再アップロードしない)。"""
+        return (
+            self.service.files()
+            .update(
+                fileId=file_id,
+                addParents=add_parent,
+                removeParents=remove_parent,
+                fields="id,name,parents",
+            )
+            .execute()
+        )
+
     # -- アップロード ------------------------------------------------------
 
     def upload(self, path: Path, drive_name: str, parent_id: str, on_progress=None) -> dict:

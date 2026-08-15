@@ -68,6 +68,17 @@ def find_final_files(trimmed: Path) -> list[Path]:
     return [p for _, p in found]
 
 
+def find_mp3_files(outdir: Path) -> list[Path]:
+    """`export/` に書き出し済みの MP3 を名前順で返す(Box / Drive 共通の入力)。"""
+    export = outdir / "export"
+    if not export.is_dir():
+        raise PipelineError(f"{export} がありません。先に `export` を実行してください。")
+    files = sorted(p for p in export.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
+    if not files:
+        raise PipelineError(f"{export} に MP3 がありません。先に `export` を実行してください。")
+    return files
+
+
 def plan_tracks(outdir: Path, date: str) -> list[Track]:
     """出力するトラックの一覧を組み立てる(まだ書き出さない)。"""
     trimmed = outdir / "trimmed"

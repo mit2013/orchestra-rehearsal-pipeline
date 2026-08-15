@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .box_client import BoxClient
 from .config import SessionConfig
+from .export import find_mp3_files
 from .util import PipelineError, log
 
 PASSWORD_SUFFIX = "{password_suffix}"
@@ -52,17 +53,8 @@ def resolve_parent_folder_id(raw: str) -> str:
 
 
 def mp3_files(outdir: Path) -> list[Path]:
-    export = outdir / "export"
-    if not export.is_dir():
-        raise PipelineError(
-            f"{export} がありません。先に `export` を実行してください。"
-        )
-    files = sorted(p for p in export.iterdir() if p.is_file() and p.suffix.lower() == ".mp3")
-    if not files:
-        raise PipelineError(
-            f"{export} に MP3 がありません。先に `export` を実行してください。"
-        )
-    return files
+    """アップロード対象の MP3。Drive 側と同じ実装を使う。"""
+    return find_mp3_files(outdir)
 
 
 def run_box_upload(
