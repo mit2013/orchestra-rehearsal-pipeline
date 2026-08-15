@@ -14,9 +14,12 @@ Box との違いに注意:
 
 from __future__ import annotations
 
-import json
+import http.client
 import os
+import socket
+import ssl
 import stat
+import time
 from pathlib import Path
 
 from .util import PipelineError, log
@@ -29,7 +32,19 @@ FOLDER_MIME = "application/vnd.google-apps.folder"
 ROOT_FOLDER_NAME = "練習録音"
 
 # 1.8GB 級の WAV を上げるので、必ず再開可能アップロードを使う。
-UPLOAD_CHUNK = 32 * 1024 * 1024
+# 回線が切れたときに捨てる量が減るよう、チャンクは控えめにする。
+UPLOAD_CHUNK = 16 * 1024 * 1024
+MAX_UPLOAD_RETRIES = 8
+
+# 数分かかる転送では一時的な切断が普通に起こる。ここに挙げたものは再開して続行する。
+RETRIABLE_ERRORS = (
+    BrokenPipeError,
+    ConnectionError,
+    socket.timeout,
+    ssl.SSLError,
+    http.client.HTTPException,
+    OSError,
+)
 
 
 def load_env(root: Path) -> tuple[str, str]:
@@ -198,9 +213,30 @@ class DriveClient:
                 fields="id,name,size,version",
             )
 
+        # 数GBを数分かけて送るので、途中の一時的な切断は普通に起こる。
+        # 再開可能アップロードなので、失敗したチャンクから送り直せばよい。
         response = None
+        attempts = 0
         while response is None:
-            status, response = request.next_chunk()
+            try:
+                status, response = request.next_chunk(num_retries=3)
+                attempts = 0
+            except RETRIABLE_ERRORS as e:
+                attempts += 1
+                if attempts > MAX_UPLOAD_RETRIES:
+                    raise PipelineError(
+                        f"{path.name} のアップロードが {MAX_UPLOAD_RETRIES} 回連続で失敗しました: "
+                        f"{type(e).__name__}: {e}"
+                    ) from e
+                wait = min(60.0, 2.0 ** attempts)
+                done = getattr(request, "resumable_progress", 0)
+                log(
+                    f"      通信エラー ({type(e).__name__})。{wait:.0f} 秒後に "
+                    f"{done/2**20:.0f} MiB 地点から再開します "
+                    f"(リトライ {attempts}/{MAX_UPLOAD_RETRIES})"
+                )
+                time.sleep(wait)
+                continue
             if status and on_progress:
                 on_progress(status.progress())
         response["_replaced"] = bool(existing)
