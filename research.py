@@ -27,6 +27,7 @@ from orchpipe.export import find_final_files
 from orchpipe.research import digest as digest_mod
 from orchpipe.research import onset as onset_mod
 from orchpipe.research import sections as sections_mod
+from orchpipe.research import visualize as viz_mod
 from orchpipe.research.asr import AsrSegment, Transcriber
 from orchpipe.research.states import (
     StateSpan,
@@ -177,6 +178,33 @@ def cmd_sections(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ステージF-2: 視覚的な一覧
+# ---------------------------------------------------------------------------
+
+def cmd_visualize(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    rdir = research_dir(outdir)
+    finals = find_final_files(outdir / "trimmed")
+    if args.block:
+        finals = [p for p in finals if args.block in p.name]
+        if not finals:
+            raise PipelineError(f"--block {args.block!r} に一致するブロックがありません")
+    all_written = []
+    for p in finals:
+        key = block_key(p)
+        spans, meta = load_states(rdir, key)
+        dst = rdir / "eval" / key / "overview"
+        log(f"  {key}: 全長 {fmt_time(meta['duration'])} を {args.chunk/60:.0f} 分ごとに描画")
+        all_written += viz_mod.render_block(p, spans, meta["duration"], dst, key,
+                                            chunk_s=args.chunk)
+    print()
+    print(f"=== ステージF-2: 視覚的な一覧 ({args.date}) ===")
+    print(f"  {len(all_written)} 枚を書き出しました")
+    if all_written:
+        print(f"  出力先: {all_written[0].parent}")
+
+
+# ---------------------------------------------------------------------------
 # ステージB
 # ---------------------------------------------------------------------------
 
@@ -257,6 +285,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     asr_opts(common(sub.add_parser("states"))).set_defaults(func=cmd_states)
     common(sub.add_parser("onset")).set_defaults(func=cmd_onset)
+
+    sp = common(sub.add_parser("visualize", help="ステージF-2: 波形+スペクトログラム+予測ラベルの一覧"))
+    sp.add_argument("--block", default=None, help="ブロック名の一部で対象を限定")
+    sp.add_argument("--chunk", type=float, default=viz_mod.CHUNK_S, help="1枚あたりの秒数")
+    sp.set_defaults(func=cmd_visualize)
     digest_opts(common(sub.add_parser("digest"))).set_defaults(func=cmd_digest)
     common(sub.add_parser("transcript")).set_defaults(func=cmd_transcript)
     common(sub.add_parser("sections")).set_defaults(func=cmd_sections)
