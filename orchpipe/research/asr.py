@@ -41,6 +41,10 @@ MAX_REPEAT_RATIO = 0.5
 MIN_JA_RATIO = 0.3
 # VAD の検出量がこの割合を下回ったら「VAD が機能していない」とみなして再試行する。
 MIN_SPEECH_RATIO = 0.01
+# 隣接する発話セグメントをひとまとまりとして扱う最大の間隔(秒)。
+# whisper のセグメント境界は息継ぎや語尾で細かく切れ、1〜3 秒の断片が並ぶ。
+# 実測では採用セグメントの 69% が間隔 0 秒(完全に連続)だった。
+MERGE_GAP_S = 2.0
 
 _JA = re.compile(r"[぀-ゟ゠-ヿ一-鿿]")
 
@@ -71,6 +75,79 @@ class AsrSegment:
             "avg_logprob": round(self.avg_logprob, 4),
             "compression_ratio": round(self.compression_ratio, 4),
         }
+
+
+@dataclass
+class Utterance:
+    """近接する発話セグメントを連結した「ひとまとまりの発言」。
+
+    whisper のセグメントは息継ぎや語尾ごとに細かく切れるため、そのまま並べると
+    「5つ目で覚えあんくらいのメロディーが出てる」「ピアノ2つなんです」のように
+    一続きの発言が分断されて読みにくい。表示とキーワード検索はこの連結後の
+    テキストを対象にする。
+
+    ただし**元セグメントの細かいタイムスタンプは捨てない**。`sources` に元の
+    セグメントを、`offsets` に「そのテキストが連結後テキストの何文字目から
+    始まるか」を保持しているので、`time_at()` で連結後の任意の文字位置から
+    元の時刻に戻せる。ステージEの候補時刻はこれを使って精度を保つ。
+    """
+
+    start: float
+    end: float
+    text: str
+    sources: list[AsrSegment]
+    offsets: list[int]
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+    def time_at(self, pos: int) -> float:
+        """連結後テキストの文字位置 `pos` を含む元セグメントの開始秒。"""
+        t = self.start
+        for off, src in zip(self.offsets, self.sources):
+            if off > pos:
+                break
+            t = src.start
+        return t
+
+    def to_json(self) -> dict:
+        return {
+            "start": round(self.start, 3),
+            "end": round(self.end, 3),
+            "text": self.text,
+            "n_segments": len(self.sources),
+            # 元の細かいタイムスタンプ(連結前)をそのまま残す
+            "segments": [{"start": round(s.start, 3), "end": round(s.end, 3),
+                          "text": s.text} for s in self.sources],
+        }
+
+
+def merge_utterances(segments: list[AsrSegment],
+                     max_gap: float = MERGE_GAP_S) -> list[Utterance]:
+    """採用済みセグメントのうち、間隔が `max_gap` 以下のものを連結する。
+
+    連結時の区切り文字は入れない。日本語は分かち書きしないので空白を挟むと
+    かえって読みにくく、「2楽」+「章」のように語の途中で切れているときに
+    ステージEの正規表現(`第?N+\\s*楽章` など)が一致しなくなるため。
+    """
+    out: list[Utterance] = []
+    for s in segments:
+        if not s.accepted:
+            continue
+        t = s.text.strip()
+        if not t:
+            continue
+        if out and (s.start - out[-1].end) <= max_gap:
+            u = out[-1]
+            u.offsets.append(len(u.text))
+            u.text += t
+            u.sources.append(s)
+            u.end = s.end
+        else:
+            out.append(Utterance(start=s.start, end=s.end, text=t,
+                                 sources=[s], offsets=[0]))
+    return out
 
 
 def decode_mono16k(path: Path, start: float | None = None, dur: float | None = None) -> np.ndarray:

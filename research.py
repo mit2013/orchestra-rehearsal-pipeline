@@ -26,9 +26,10 @@ from pathlib import Path
 from orchpipe.export import find_final_files
 from orchpipe.research import digest as digest_mod
 from orchpipe.research import onset as onset_mod
+from orchpipe.research import asr as asr_mod
 from orchpipe.research import sections as sections_mod
 from orchpipe.research import visualize as viz_mod
-from orchpipe.research.asr import AsrSegment, Transcriber
+from orchpipe.research.asr import AsrSegment, Transcriber, merge_utterances
 from orchpipe.research.states import (
     StateSpan,
     classify_block,
@@ -145,16 +146,22 @@ def cmd_transcript(args) -> None:
         key = block_key(p)
         segs = load_asr(rdir, key)
         acc = [s for s in segs if s.accepted]
+        utts = merge_utterances(acc, max_gap=args.merge_gap)
+        # json は元の細かいタイムスタンプを保持したまま、連結後の並びを併記する。
         write_json(rdir / f"{key}_transcript.json",
-                   {"meta": {"block": key, "n_total": len(segs), "n_accepted": len(acc)},
+                   {"meta": {"block": key, "n_total": len(segs), "n_accepted": len(acc),
+                             "n_utterances": len(utts), "merge_gap_sec": args.merge_gap},
                     "segments": [{"start": round(s.start, 2), "end": round(s.end, 2),
-                                  "text": s.text} for s in acc]})
+                                  "text": s.text} for s in acc],
+                    "utterances": [u.to_json() for u in utts]})
+        # txt は読みやすさ優先。連結後のまとまりを1行にする。
         lines = [f"# {args.date} {key} 書き起こし",
-                 f"# 採用 {len(acc)} / 全 {len(segs)} セグメント", ""]
-        for s in acc:
-            lines.append(f"[{fmt_time(s.start)} - {fmt_time(s.end)}] {s.text}")
+                 f"# {len(utts)} 発言(採用 {len(acc)} / 全 {len(segs)} セグメントを "
+                 f"間隔 {args.merge_gap} 秒以内で連結)", ""]
+        for u in utts:
+            lines.append(f"[{fmt_time(u.start)} - {fmt_time(u.end)}] {u.text}")
         (rdir / f"{key}_transcript.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        log(f"  {key}: 採用 {len(acc)} / 全 {len(segs)} セグメント")
+        log(f"  {key}: {len(utts)} 発言(採用 {len(acc)} / 全 {len(segs)} セグメント)")
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +175,8 @@ def cmd_sections(args) -> None:
     for p in finals:
         key = block_key(p)
         segs = load_asr(rdir, key)
-        cands = sections_mod.dedupe(sections_mod.find_candidates(segs))
+        utts = merge_utterances([s for s in segs if s.accepted], max_gap=args.merge_gap)
+        cands = sections_mod.dedupe(sections_mod.find_candidates(utts))
         write_json(rdir / f"{key}_section_candidates.json",
                    {"meta": {"block": key, "n_candidates": len(cands)},
                     "candidates": [c.to_json() for c in cands]})
@@ -278,6 +286,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="保存済みの *_asr.json を再利用し、ASR を再実行しない")
         return sp
 
+    def text_opts(sp):
+        sp.add_argument("--merge-gap", type=float, default=asr_mod.MERGE_GAP_S,
+                        help="この間隔(秒)以内で隣接する発話セグメントを連結する")
+        return sp
+
     def digest_opts(sp):
         sp.add_argument("--margin", type=float, default=digest_mod.MARGIN_S)
         sp.add_argument("--crossfade", type=float, default=digest_mod.CROSSFADE_S)
@@ -291,9 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--chunk", type=float, default=viz_mod.CHUNK_S, help="1枚あたりの秒数")
     sp.set_defaults(func=cmd_visualize)
     digest_opts(common(sub.add_parser("digest"))).set_defaults(func=cmd_digest)
-    common(sub.add_parser("transcript")).set_defaults(func=cmd_transcript)
-    common(sub.add_parser("sections")).set_defaults(func=cmd_sections)
-    digest_opts(asr_opts(common(sub.add_parser("all")))).set_defaults(func=cmd_all)
+    text_opts(common(sub.add_parser("transcript"))).set_defaults(func=cmd_transcript)
+    text_opts(common(sub.add_parser("sections"))).set_defaults(func=cmd_sections)
+    text_opts(digest_opts(asr_opts(common(sub.add_parser("all"))))).set_defaults(func=cmd_all)
     return p
 
 
