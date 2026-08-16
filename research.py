@@ -75,6 +75,11 @@ def cmd_states(args) -> None:
     finals = find_final_files(outdir / "trimmed")
     if not finals:
         raise PipelineError(f"{outdir/'trimmed'} に *_final.wav がありません")
+    if args.only:
+        finals = [p for p in finals if args.only in p.name]
+        if not finals:
+            raise PipelineError(f"--only {args.only!r} に一致するブロックがありません")
+        log(f"対象ブロックを限定: {', '.join(p.name for p in finals)}")
 
     tr = None if args.reuse_asr else Transcriber(args.model, threads=args.threads)
     started = time.time()
@@ -240,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
     def asr_opts(sp):
         sp.add_argument("--model", default="medium", help="faster-whisper のモデルサイズ")
         sp.add_argument("--threads", type=int, default=8)
+        sp.add_argument("--only", default=None, help="ブロック名の一部で対象を限定")
         sp.add_argument("--reuse-asr", action="store_true",
                         help="保存済みの *_asr.json を再利用し、ASR を再実行しない")
         return sp

@@ -20,6 +20,8 @@
 !/output/*/
 !/output/*/confirmed.json
 !/output/*/session_config.json
+# 研究ブランチの最終レポート(成果物なので追跡する)
+!/output/research_report.md
 
 # ---------------------------------------------------------------------------
 # Python

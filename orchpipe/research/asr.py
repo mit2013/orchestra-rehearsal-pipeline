@@ -39,6 +39,8 @@ MIN_TEXT_CHARS = 3
 MAX_REPEAT_RATIO = 0.5
 # 日本語らしさ(かな・漢字)の最低比率。記号や英字だけの出力を弾く。
 MIN_JA_RATIO = 0.3
+# VAD の検出量がこの割合を下回ったら「VAD が機能していない」とみなして再試行する。
+MIN_SPEECH_RATIO = 0.01
 
 _JA = re.compile(r"[぀-ゟ゠-ヿ一-鿿]")
 
@@ -153,12 +155,19 @@ class Transcriber:
         VAD が全編で 0 区間しか返さず、実際には指揮者の発言が存在していた
         (VAD を切ると「2楽章4番」等が正しく取れる)。おそらく遠いマイクで
         拾った声が、近接マイク前提の VAD の想定から外れているため。
-        そこで VAD が 1 件も返さなかった場合は、VAD なしで自動的にやり直す。
+        そこで VAD の結果が「発話がほぼ無い」と言っている場合は、VAD なしで
+        自動的にやり直す。「0件」ではなく「尺に対する割合」で判定するのは、
+        260726 合奏2 で VAD が 1 件だけ返し(65分の音源に対し2秒)、
+        0件判定のフォールバックをすり抜けたため。
         """
         segments, _info = self._run(audio, use_vad)
         segments = list(segments)
-        if use_vad and not segments:
-            log("    VAD が発話を1件も検出しませんでした。VAD なしで再試行します(時間がかかります)")
+        covered = sum(s.end - s.start for s in segments)
+        total = len(audio) / ASR_SR
+        if use_vad and total > 0 and covered / total < MIN_SPEECH_RATIO:
+            log(f"    VAD の発話検出が {covered:.0f} 秒 / {total:.0f} 秒 "
+                f"({covered/total*100:.2f}%) と少なすぎます。"
+                "VAD なしで再試行します(時間がかかります)")
             segments, _info = self._run(audio, False)
             segments = list(segments)
         out: list[AsrSegment] = []
