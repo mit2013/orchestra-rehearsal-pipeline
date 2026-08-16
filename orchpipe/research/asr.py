@@ -133,16 +133,34 @@ class Transcriber:
             model_size, device="cpu", compute_type=compute_type, cpu_threads=threads
         )
 
-    def transcribe(self, audio: np.ndarray, offset: float = 0.0) -> list[AsrSegment]:
-        """VAD で発話候補を絞ってから書き起こす。`offset` は元音源での開始秒。"""
-        segments, _info = self.model.transcribe(
+    def _run(self, audio: np.ndarray, use_vad: bool):
+        return self.model.transcribe(
             audio,
             language="ja",
             beam_size=1,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=700, speech_pad_ms=200),
+            vad_filter=use_vad,
+            vad_parameters=(dict(min_silence_duration_ms=700, speech_pad_ms=200)
+                            if use_vad else None),
             condition_on_previous_text=False,
         )
+
+    def transcribe(self, audio: np.ndarray, offset: float = 0.0,
+                   use_vad: bool = True) -> list[AsrSegment]:
+        """書き起こす。`offset` は元音源での開始秒。
+
+        既定では Silero VAD で発話候補に絞ってから処理する(高速)。
+        ただし **VAD がこの録音で機能しない場合がある**。260726(管セク練習)では
+        VAD が全編で 0 区間しか返さず、実際には指揮者の発言が存在していた
+        (VAD を切ると「2楽章4番」等が正しく取れる)。おそらく遠いマイクで
+        拾った声が、近接マイク前提の VAD の想定から外れているため。
+        そこで VAD が 1 件も返さなかった場合は、VAD なしで自動的にやり直す。
+        """
+        segments, _info = self._run(audio, use_vad)
+        segments = list(segments)
+        if use_vad and not segments:
+            log("    VAD が発話を1件も検出しませんでした。VAD なしで再試行します(時間がかかります)")
+            segments, _info = self._run(audio, False)
+            segments = list(segments)
         out: list[AsrSegment] = []
         for s in segments:
             text = s.text.strip()
