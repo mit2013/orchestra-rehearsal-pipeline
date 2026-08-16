@@ -21,10 +21,49 @@ MIN_KEEP_S = 1.0      # これより短い断片は繋いでも聴き取れな�
 
 
 def playing_ranges(spans: list[StateSpan], total: float,
-                   margin: float = MARGIN_S) -> list[tuple[float, float]]:
-    """`playing` 区間にマージンを付け、重なりを統合した範囲リスト。"""
-    raw = [(max(0.0, s.start - margin), min(total, s.end + margin))
-           for s in spans if s.label == "playing"]
+                   margin: float = MARGIN_S,
+                   clamp_to_speech: bool = True) -> list[tuple[float, float]]:
+    """`playing` 区間にマージンを付け、重なりを統合した範囲リスト。
+
+    **マージンは speech 側には広げない。** 当初は前後一律に広げていたが、
+    実データでは speech 区間の 76〜98% が 6 秒未満だったため、前後 3 秒の
+    マージンが発言をまたいで橋渡ししてしまい、ダイジェストに発言が
+    14〜58% 残っていた。
+
+    そこで2段構えにする:
+
+    1. 隣接区間が `speech` なら、その側のマージンを 0 にする
+    2. `clamp_to_speech`(既定 True)なら、さらに「最も近い speech 区間の境界」
+       までしかマージンを伸ばさない。playing → silence(2秒)→ speech のように
+       間に短い silence を挟む場合、1 だけでは 3 秒のマージンが silence を
+       越えて speech に届いてしまうため。
+    """
+    idx = [i for i, s in enumerate(spans) if s.label == "playing"]
+    if not idx:
+        return []
+
+    speech = [(s.start, s.end) for s in spans if s.label == "speech"]
+
+    raw: list[tuple[float, float]] = []
+    for i in idx:
+        s = spans[i]
+        left = 0.0 if (i > 0 and spans[i - 1].label == "speech") else margin
+        right = 0.0 if (i + 1 < len(spans) and spans[i + 1].label == "speech") else margin
+        a = max(0.0, s.start - left)
+        b = min(total, s.end + right)
+
+        if clamp_to_speech and speech:
+            # 直前の speech の終端より前には戻らない
+            before = [e for _st, e in speech if e <= s.start]
+            if before:
+                a = max(a, max(before))
+            # 直後の speech の始端より先には出ない
+            after = [st for st, _e in speech if st >= s.end]
+            if after:
+                b = min(b, min(after))
+        if b > a:
+            raw.append((a, b))
+
     if not raw:
         return []
     raw.sort()
