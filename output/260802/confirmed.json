@@ -18,14 +18,14 @@
   {
     "index": 3,
     "start": "01:30:49",
-    "end": "01:41:54",
+    "end": "01:40:38",
     "label": "休憩",
     "action": "remove",
     "confidence": 1.0
   },
   {
     "index": 4,
-    "start": "01:41:54",
+    "start": "01:40:38",
     "end": "03:04:00",
     "label": "合奏2",
     "action": "keep",
