@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 
 from ..util import FFMPEG, PipelineError, fmt_time, log
-from .states import LABELS, StateSpan
+from .states import StateSpan
+from .states2 import LABELS
 
 # 4クラスの色。ラベル帯・凡例・スペクトログラム上の縦線で共通に使う。
 LABEL_COLORS = {
@@ -25,12 +26,15 @@ LABEL_COLORS = {
     "tuning": "#8e44ad",
     "speech": "#e74c3c",
     "playing": "#2ecc71",
+    # G-2 で追加。どのクラスの証拠も立たなかった区間。
+    "unclear": "#f0a020",
 }
 LABEL_JA = {
     "silence": "無音",
     "tuning": "チューニング",
     "speech": "発言",
     "playing": "演奏",
+    "unclear": "証拠不足",
 }
 
 CHUNK_S = 600.0        # 1枚あたり10分

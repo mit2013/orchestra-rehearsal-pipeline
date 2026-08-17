@@ -67,6 +67,19 @@ TUNING_A_RATIO = 0.55
 # チューニングとみなす最短の長さ。`tuning.py` の既定と揃えてある。
 MIN_TUNING_S = 12.0
 
+# 演奏に挟まれた短い unclear を playing に埋め戻す上限。
+#
+# 閾値付近の unclear は、その約半分(15.4分中7.3分)が playing に挟まれており、
+# 長さの中央値は 1.0 秒しかない。人手で10件を聴いて確認したところ、演奏に
+# 挟まれた7件のうち6件は実際に弱音部の演奏だった(残り1件はチューニングの
+# 終わりかけ)。これらを落とすと圧縮率は上がるが、ダイジェストが1〜3秒おきに
+# 途切れてブツ切りになる。
+#
+# 一方、silence や speech に隣接する unclear は埋め戻さない。同じ確認で、
+# 「演奏は既に止まっており指揮者が指示している」場面が正しく非演奏と判定
+# できていたため。片側が silence の場合も同様に埋め戻さない。
+MAX_FILL_S = 5.0
+
 LABELS = ("silence", "tuning", "speech", "playing", "unclear")
 
 
@@ -218,6 +231,36 @@ def classify(
         },
     }
     return spans, meta
+
+
+def fill_playing_gaps(spans: list[Span],
+                      max_s: float = MAX_FILL_S) -> tuple[list[Span], dict]:
+    """演奏に挟まれた短い `unclear` を playing に埋め戻す。
+
+    **両隣がともに playing の場合だけ**が対象。片側が silence や speech の
+    unclear は、実際に演奏が止まっている場面であることが人手確認で分かって
+    いるので触らない。埋め戻した区間の確信度はそのまま残すので、あとから
+    「本来は閾値未満だった」ことが分かる。
+    """
+    n_filled, sec_filled = 0, 0.0
+    for i in range(1, len(spans) - 1):
+        s = spans[i]
+        if s.label != "unclear" or s.duration > max_s:
+            continue
+        if spans[i - 1].label == "playing" and spans[i + 1].label == "playing":
+            s.label = "playing"
+            n_filled += 1
+            sec_filled += s.duration
+
+    merged: list[Span] = []
+    for s in spans:
+        if merged and merged[-1].label == s.label:
+            merged[-1].end = s.end
+            merged[-1].confidence = max(merged[-1].confidence, s.confidence)
+        else:
+            merged.append(s)
+    return merged, {"n_filled": n_filled, "seconds_filled": round(sec_filled, 1),
+                    "max_fill_s": max_s}
 
 
 def summarize(spans: list[Span], total: float) -> dict:

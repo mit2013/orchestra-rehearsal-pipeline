@@ -291,6 +291,10 @@ def cmd_states2(args) -> None:
         spans, meta = states2_mod.classify(
             src, speech, win_s=args.win, hop_s=args.hop,
             play_threshold=args.play_threshold)
+        spans, fill = states2_mod.fill_playing_gaps(spans, max_s=args.fill_gap)
+        meta["gap_fill"] = fill
+        log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
+            f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
         summary = states2_mod.summarize(spans, meta["duration"])
         write_json(rdir / f"{key}_states2.json",
                    {"meta": meta, "summary": summary,
@@ -304,6 +308,68 @@ def cmd_states2(args) -> None:
             s = summary[lab]
             print(f"    {lab:<9} {s['seconds']/60:7.1f}分  {s['ratio']*100:5.1f}%  "
                   f"({s['count']} 区間)")
+
+
+# ---------------------------------------------------------------------------
+# ステージG-3: 新しい分類でのダイジェストと、旧版との比較
+# ---------------------------------------------------------------------------
+
+def load_states2(rdir: Path, key: str):
+    data = json.loads((rdir / f"{key}_states2.json").read_text(encoding="utf-8"))
+    spans = [states2_mod.Span(s["start"], s["end"], s["label"], s["confidence"])
+             for s in data["spans"]]
+    return spans, data["meta"]
+
+
+def cmd_digest2(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    rdir = research_dir(outdir)
+    finals = [p for p in find_final_files(outdir / "trimmed") if args.block in p.name]
+    if not finals:
+        raise PipelineError(f"--block {args.block!r} に一致するブロックがありません")
+
+    rows = []
+    for p in finals:
+        key = block_key(p)
+        spans, meta = load_states2(rdir, key)
+        total = meta["duration"]
+        ranges = digest_mod.playing_ranges(spans, total, margin=args.margin)
+        dst = rdir / f"{key}_digest2.wav"
+        log(f"  {key}: playing {len([s for s in spans if s.label=='playing'])} 区間 "
+            f"-> マージン統合後 {len(ranges)} 範囲")
+        info = digest_mod.build_digest(p, ranges, dst, crossfade=args.crossfade)
+        kept = info["kept_seconds"] - info.get("crossfade_loss", 0.0)
+        rows.append({"block": key, "original_sec": round(total, 1),
+                     "digest_sec": round(kept, 1), "ratio": round(kept / total, 4),
+                     "n_ranges": info["n_ranges"], "path": str(dst)})
+        log(f"    {fmt_time(total)} -> {fmt_time(kept)}  (圧縮率 {kept/total*100:.1f}%)")
+    write_json(rdir / "digest2_summary.json", {"blocks": rows})
+
+
+def cmd_compare(args) -> None:
+    """旧分類と新分類を同じ形式の画像で並べて出す(指示書 G-3)。"""
+    outdir = out_dir(args.root, args.date)
+    rdir = research_dir(outdir)
+    finals = [p for p in find_final_files(outdir / "trimmed") if args.block in p.name]
+    if not finals:
+        raise PipelineError(f"--block {args.block!r} に一致するブロックがありません")
+
+    written = []
+    for p in finals:
+        key = block_key(p)
+        old_spans, old_meta = load_states(rdir, key)
+        new_spans, new_meta = load_states2(rdir, key)
+        total = new_meta["duration"]
+        for tag, spans in (("old", old_spans), ("new", new_spans)):
+            dst = rdir / "eval" / key / f"overview_{tag}"
+            log(f"  {key} [{tag}]: {fmt_time(total)} を {args.chunk/60:.0f} 分ごとに描画")
+            written += viz_mod.render_block(p, spans, total, dst, f"{key}_{tag}",
+                                            chunk_s=args.chunk)
+    print()
+    print(f"=== ステージG-3: 新旧の比較画像 ({args.date}) ===")
+    print(f"  {len(written)} 枚")
+    for d in sorted({w.parent for w in written}):
+        print(f"    {d}")
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +475,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hop", type=float, default=states2_mod.HOP_S)
     sp.add_argument("--play-threshold", type=float, default=0.5,
                     help="この確信度以上を playing とする(高いほど厳しく捨てる)")
+    sp.add_argument("--fill-gap", type=float, default=states2_mod.MAX_FILL_S,
+                    help="演奏に挟まれたこの長さ以下の unclear を playing に埋め戻す")
     sp.set_defaults(func=cmd_states2)
+    sp = digest_opts(common(sub.add_parser("digest2", help="ステージG-3: 新分類でのダイジェスト")))
+    sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.set_defaults(func=cmd_digest2)
+
+    sp = common(sub.add_parser("compare", help="ステージG-3: 旧新の分類を並べた画像"))
+    sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--chunk", type=float, default=viz_mod.CHUNK_S)
+    sp.set_defaults(func=cmd_compare)
+
     digest_opts(common(sub.add_parser("digest"))).set_defaults(func=cmd_digest)
     text_opts(common(sub.add_parser("transcript"))).set_defaults(func=cmd_transcript)
     text_opts(common(sub.add_parser("sections"))).set_defaults(func=cmd_sections)
