@@ -134,6 +134,123 @@ def _harmonic_analysis(spec: np.ndarray, freqs: np.ndarray) -> tuple[int, float]
     return n_series, min(explained / total, 1.0)
 
 
+@dataclass
+class FrameSeries:
+    """ブロック全体をフレーム単位で見た候補特徴量。"""
+
+    times: np.ndarray
+    harmonic_ratio: np.ndarray
+    polyphony: np.ndarray
+    stability: np.ndarray      # 直前フレームとのスペクトル類似度
+    flux: np.ndarray
+    rms_db: np.ndarray
+    a_match: np.ndarray        # 最強ピークが A の倍音に一致しているか(0/1)
+
+    @property
+    def fps(self) -> float:
+        return SR / HOP
+
+
+def _stream(path: Path, chunk_s: float = 60.0):
+    """ffmpeg から 16kHz モノラルを読み、フレーム境界を跨がないように渡す。"""
+    cmd = [FFMPEG, "-v", "error", "-i", str(path),
+           "-f", "f32le", "-ac", "1", "-ar", str(SR), "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    nbytes = int(chunk_s * SR) * 4
+    tail = np.zeros(0, dtype=np.float32)
+    try:
+        while True:
+            buf = proc.stdout.read(nbytes)
+            if not buf:
+                break
+            x = np.frombuffer(buf, dtype="<f4")
+            cur = np.concatenate([tail, x]) if tail.size else np.ascontiguousarray(x)
+            if len(cur) < FRAME:
+                tail = cur
+                continue
+            n = 1 + (len(cur) - FRAME) // HOP
+            yield cur[: (n - 1) * HOP + FRAME], n
+            tail = cur[n * HOP:].copy()
+    finally:
+        proc.stdout.close()
+        err = proc.stderr.read().decode("utf-8", "replace")
+        proc.stderr.close()
+        if proc.wait() != 0:
+            raise PipelineError(f"デコードに失敗: {path}\n{err.strip()[-400:]}")
+
+
+def frame_series(path: Path, a_refs: np.ndarray | None = None,
+                 a_tol_cent: float = 60.0, progress=None) -> FrameSeries:
+    """ブロック全体をストリーミングでフレーム特徴量にする。
+
+    83 分ぶんのスペクトルを一度に持つと数百 MB になるため、チャンクごとに
+    スカラーへ畳んでから連結する。
+    """
+    acc: dict[str, list[np.ndarray]] = {
+        k: [] for k in ("h", "p", "s", "f", "r", "a")}
+    prev_spec: np.ndarray | None = None
+    n_done = 0
+
+    for buf, n in _stream(path):
+        mag, freqs = _spectra(buf)
+        if mag.shape[0] == 0:
+            continue
+        band = (freqs >= F_LO) & (freqs <= F_HI)
+
+        h = np.empty(mag.shape[0], dtype=np.float32)
+        p = np.empty(mag.shape[0], dtype=np.float32)
+        for k in range(mag.shape[0]):
+            ns, r = _harmonic_analysis(mag[k], freqs)
+            p[k] = ns
+            h[k] = r
+        acc["h"].append(h)
+        acc["p"].append(p)
+
+        logm = np.log(mag + 1e-8)
+        logm = logm - logm.mean(axis=1, keepdims=True)
+        nrm = np.linalg.norm(logm, axis=1) + 1e-12
+        ref = prev_spec if prev_spec is not None else logm[0]
+        prevm = np.vstack([ref[None, :], logm[:-1]])
+        pn = np.linalg.norm(prevm, axis=1) + 1e-12
+        acc["s"].append((np.sum(prevm * logm, axis=1) / (pn * nrm)).astype(np.float32))
+        prev_spec = logm[-1].copy()
+
+        pm = np.vstack([mag[0][None, :], mag[:-1]])
+        acc["f"].append((np.sum(np.maximum(mag - pm, 0.0), axis=1)
+                         / (np.sum(mag, axis=1) + 1e-12)).astype(np.float32))
+
+        frames = np.lib.stride_tricks.as_strided(
+            buf, shape=(mag.shape[0], FRAME),
+            strides=(buf.strides[0] * HOP, buf.strides[0]), writeable=False)
+        acc["r"].append((20.0 * np.log10(
+            np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1)) + 1e-12)).astype(np.float32))
+
+        if a_refs is not None:
+            mb = mag[:, band]
+            pk = freqs[band][np.argmax(mb, axis=1)]
+            cents = np.min(np.abs(1200.0 * np.log2(
+                np.maximum(pk, 1.0)[:, None] / a_refs[None, :])), axis=1)
+            acc["a"].append((cents < a_tol_cent).astype(np.float32))
+        else:
+            acc["a"].append(np.zeros(mag.shape[0], dtype=np.float32))
+
+        n_done += mag.shape[0]
+        if progress:
+            progress(n_done * HOP / SR)
+
+    if n_done == 0:
+        raise PipelineError(f"解析できるフレームがありません: {path}")
+
+    def cat(k):
+        return np.concatenate(acc[k])
+
+    return FrameSeries(
+        times=(np.arange(n_done, dtype=np.float64) * HOP + FRAME / 2) / SR,
+        harmonic_ratio=cat("h"), polyphony=cat("p"), stability=cat("s"),
+        flux=cat("f"), rms_db=cat("r"), a_match=cat("a"),
+    )
+
+
 def extract(x: np.ndarray) -> PlayingFeatures:
     """1区間ぶんの波形から候補特徴量を計算する。"""
     mag, freqs = _spectra(x)

@@ -29,6 +29,7 @@ from orchpipe.research import onset as onset_mod
 from orchpipe.research import asr as asr_mod
 from orchpipe.research import diagnose as diag_mod
 from orchpipe.research import sections as sections_mod
+from orchpipe.research import states2 as states2_mod
 from orchpipe.research import visualize as viz_mod
 from orchpipe.research.asr import AsrSegment, Transcriber, merge_utterances
 from orchpipe.research.diagnose import load_states_and_asr
@@ -271,6 +272,41 @@ def cmd_diagnose(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ステージG-2: 積極的な証拠にもとづく分類
+# ---------------------------------------------------------------------------
+
+def cmd_states2(args) -> None:
+    outdir = out_dir(args.root, args.date)
+    rdir = research_dir(outdir)
+    finals = [p for p in find_final_files(outdir / "trimmed") if args.block in p.name]
+    if not finals:
+        raise PipelineError(f"--block {args.block!r} に一致するブロックがありません")
+
+    for src in finals:
+        key = block_key(src)
+        segs = load_asr(rdir, key)
+        speech = [(s.start, s.end) for s in segs if s.accepted]
+        log(f"{key}: ASR の発話区間 {len(speech)} 件を証拠として使います")
+
+        spans, meta = states2_mod.classify(
+            src, speech, win_s=args.win, hop_s=args.hop,
+            play_threshold=args.play_threshold)
+        summary = states2_mod.summarize(spans, meta["duration"])
+        write_json(rdir / f"{key}_states2.json",
+                   {"meta": meta, "summary": summary,
+                    "spans": [s.to_json() for s in spans]})
+
+        print()
+        print(f"=== ステージG-2: 新しい分類 ({args.date} {key}) ===")
+        print(f"  全長 {fmt_time(meta['duration'])} / 窓 {meta['win_s']}s / "
+              f"演奏の閾値 {meta['play_threshold']}")
+        for lab in states2_mod.LABELS:
+            s = summary[lab]
+            print(f"    {lab:<9} {s['seconds']/60:7.1f}分  {s['ratio']*100:5.1f}%  "
+                  f"({s['count']} 区間)")
+
+
+# ---------------------------------------------------------------------------
 # ステージB
 # ---------------------------------------------------------------------------
 
@@ -367,6 +403,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="既存解析から現在の音源への平行移動[秒](既定は尺の差から自動)")
     sp.add_argument("--force", action="store_true", help="特徴量キャッシュを作り直す")
     sp.set_defaults(func=cmd_diagnose)
+    sp = common(sub.add_parser("states2", help="ステージG-2: 積極的な証拠にもとづく分類"))
+    sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--win", type=float, default=states2_mod.WIN_S)
+    sp.add_argument("--hop", type=float, default=states2_mod.HOP_S)
+    sp.add_argument("--play-threshold", type=float, default=0.5,
+                    help="この確信度以上を playing とする(高いほど厳しく捨てる)")
+    sp.set_defaults(func=cmd_states2)
     digest_opts(common(sub.add_parser("digest"))).set_defaults(func=cmd_digest)
     text_opts(common(sub.add_parser("transcript"))).set_defaults(func=cmd_transcript)
     text_opts(common(sub.add_parser("sections"))).set_defaults(func=cmd_sections)
