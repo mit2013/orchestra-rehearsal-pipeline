@@ -335,7 +335,7 @@ def cmd_digest2(args) -> None:
         spans, meta = load_states2(rdir, key)
         total = meta["duration"]
         ranges = digest_mod.playing_ranges(spans, total, margin=args.margin,
-                                           lead=args.lead)
+                                           lead=args.lead, tail=args.tail)
         dst = rdir / f"{key}_digest2.wav"
         log(f"  {key}: playing {len([s for s in spans if s.label=='playing'])} 区間 "
             f"-> マージン統合後 {len(ranges)} 範囲")
@@ -387,7 +387,7 @@ def cmd_review(args) -> None:
         spans, meta = load_states2(rdir, key)
         total = meta["duration"]
         ranges = digest_mod.playing_ranges(spans, total, margin=args.margin,
-                                           lead=args.lead)
+                                           lead=args.lead, tail=args.tail)
         dst = rdir / "eval" / key / "boundaries"
         clips = review_mod.build(p, key, ranges, spans, dst,
                                  crossfade=args.crossfade,
@@ -396,7 +396,7 @@ def cmd_review(args) -> None:
         print()
         print(f"=== 境界レビュー ({args.date} {key}) ===")
         print(f"  範囲 {len(ranges)} / クリップ {len(clips)} 本 "
-              f"(マージン {args.margin}s + 予備拍 {args.lead}s)")
+              f"(マージン {args.margin}s + 予備拍 {args.lead}s + 余韻 {args.tail}s)")
         print(f"  クリップ: {dst}")
         print(f"  シート  : {dst.parent / f'{key}_boundary_review.csv'}")
 
@@ -511,11 +511,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
     sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S,
                     help="予備拍リードタイム[秒]。演奏開始の手前を常にこれだけ残す")
+    sp.add_argument("--tail", type=float, default=digest_mod.TAIL_S,
+                    help="余韻テイル[秒]。演奏終了の後ろを常にこれだけ残す")
     sp.set_defaults(func=cmd_digest2)
 
     sp = digest_opts(common(sub.add_parser("review", help="採用範囲の境界のレビュー用クリップとCSV")))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
     sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S)
+    sp.add_argument("--tail", type=float, default=digest_mod.TAIL_S)
     sp.add_argument("--pre", type=float, default=review_mod.PRE_S,
                     help="カット位置より手前をクリップに含める秒数")
     sp.add_argument("--post", type=float, default=review_mod.POST_S)
