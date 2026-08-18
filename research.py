@@ -28,6 +28,7 @@ from orchpipe.research import digest as digest_mod
 from orchpipe.research import onset as onset_mod
 from orchpipe.research import asr as asr_mod
 from orchpipe.research import diagnose as diag_mod
+from orchpipe.research import review as review_mod
 from orchpipe.research import sections as sections_mod
 from orchpipe.research import states2 as states2_mod
 from orchpipe.research import visualize as viz_mod
@@ -333,7 +334,8 @@ def cmd_digest2(args) -> None:
         key = block_key(p)
         spans, meta = load_states2(rdir, key)
         total = meta["duration"]
-        ranges = digest_mod.playing_ranges(spans, total, margin=args.margin)
+        ranges = digest_mod.playing_ranges(spans, total, margin=args.margin,
+                                           lead=args.lead)
         dst = rdir / f"{key}_digest2.wav"
         log(f"  {key}: playing {len([s for s in spans if s.label=='playing'])} 区間 "
             f"-> マージン統合後 {len(ranges)} 範囲")
@@ -370,6 +372,33 @@ def cmd_compare(args) -> None:
     print(f"  {len(written)} 枚")
     for d in sorted({w.parent for w in written}):
         print(f"    {d}")
+
+
+def cmd_review(args) -> None:
+    """採用範囲の境界について、レビュー用クリップと記入シートを出す。"""
+    outdir = out_dir(args.root, args.date)
+    rdir = research_dir(outdir)
+    finals = [p for p in find_final_files(outdir / "trimmed") if args.block in p.name]
+    if not finals:
+        raise PipelineError(f"--block {args.block!r} に一致するブロックがありません")
+
+    for p in finals:
+        key = block_key(p)
+        spans, meta = load_states2(rdir, key)
+        total = meta["duration"]
+        ranges = digest_mod.playing_ranges(spans, total, margin=args.margin,
+                                           lead=args.lead)
+        dst = rdir / "eval" / key / "boundaries"
+        clips = review_mod.build(p, key, ranges, spans, dst,
+                                 crossfade=args.crossfade,
+                                 pre_s=args.pre, post_s=args.post, total=total)
+        review_mod.write_sheet(clips, dst.parent / f"{key}_boundary_review.csv")
+        print()
+        print(f"=== 境界レビュー ({args.date} {key}) ===")
+        print(f"  範囲 {len(ranges)} / クリップ {len(clips)} 本 "
+              f"(マージン {args.margin}s + 予備拍 {args.lead}s)")
+        print(f"  クリップ: {dst}")
+        print(f"  シート  : {dst.parent / f'{key}_boundary_review.csv'}")
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +509,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_states2)
     sp = digest_opts(common(sub.add_parser("digest2", help="ステージG-3: 新分類でのダイジェスト")))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S,
+                    help="予備拍リードタイム[秒]。演奏開始の手前を常にこれだけ残す")
     sp.set_defaults(func=cmd_digest2)
+
+    sp = digest_opts(common(sub.add_parser("review", help="採用範囲の境界のレビュー用クリップとCSV")))
+    sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S)
+    sp.add_argument("--pre", type=float, default=review_mod.PRE_S,
+                    help="カット位置より手前をクリップに含める秒数")
+    sp.add_argument("--post", type=float, default=review_mod.POST_S)
+    sp.set_defaults(func=cmd_review)
 
     sp = common(sub.add_parser("compare", help="ステージG-3: 旧新の分類を並べた画像"))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")

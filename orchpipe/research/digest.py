@@ -19,10 +19,26 @@ MARGIN_S = 3.0
 CROSSFADE_S = 0.075   # 75ms。指示書の 50〜100ms の中間
 MIN_KEEP_S = 1.0      # これより短い断片は繋いでも聴き取れないので捨てる
 
+# 予備拍リードタイム。マージンとは目的が異なる独立したパラメータである。
+#
+# - マージン(`margin`)は**防御的**な値で、「本物の演奏の出だしを検出し損ねている
+#   ぶんを取り戻す」ためのもの。検出の遅れという誤差に対する保険であり、誤差が
+#   小さければ本来は不要になる性質のもの。
+# - 予備拍リードタイム(`lead`)は**音楽的**な値で、演奏の始まりが正確に分かって
+#   いても、その手前を必ず残す。指揮者の振り上げ・奏者のブレス・予備拍がここに
+#   入るので、これが無いと出だしが唐突に聞こえる。
+#
+# 目的が違うので合成せず、重ね合わせる。最終的な先頭は
+# 「マージンで確定した位置」と「演奏開始 - リードタイム」の early い方になる。
+# リードタイムは speech へのクランプを受けない。予備拍の直前に指揮者の合図が
+# 入るのはむしろ自然であり、そこを避ける理由がないため。
+LEAD_S = 3.0
+
 
 def playing_ranges(spans: list[StateSpan], total: float,
                    margin: float = MARGIN_S,
-                   clamp_to_speech: bool = True) -> list[tuple[float, float]]:
+                   clamp_to_speech: bool = True,
+                   lead: float = 0.0) -> list[tuple[float, float]]:
     """`playing` 区間にマージンを付け、重なりを統合した範囲リスト。
 
     **マージンは speech 側には広げない。** 当初は前後一律に広げていたが、
@@ -61,6 +77,12 @@ def playing_ranges(spans: list[StateSpan], total: float,
             after = [st for st, _e in speech if st >= s.end]
             if after:
                 b = min(b, min(after))
+
+        # 予備拍リードタイムを重ねる。speech クランプの後に適用するので、
+        # 直前の指示や合図があっても手前を確保できる。
+        if lead > 0.0:
+            a = min(a, max(0.0, s.start - lead))
+
         if b > a:
             raw.append((a, b))
 
