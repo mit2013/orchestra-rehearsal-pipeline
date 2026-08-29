@@ -80,7 +80,34 @@ MIN_TUNING_S = 12.0
 # できていたため。片側が silence の場合も同様に埋め戻さない。
 MAX_FILL_S = 5.0
 
-LABELS = ("silence", "tuning", "speech", "playing", "unclear")
+# ブロック末尾の「音出し」を切り分ける2条件。
+#
+# 練習が終わったあとも録音は回り続けるので、各自が勝手に音を出す時間が
+# ブロックの末尾に張り付く。調和性から見ると本物の演奏と区別がつかず、実際
+# 5ブロック中4ブロックで、最後の playing 区間(合計 329.7 秒)が音出しだった。
+# 確信度は 1.00 で、主指標では原理的に拾えない。
+#
+# 人手判定つき10標本(音出し4・演奏6)で分離できたのは次の2つだけだった。
+#
+#   位置    : 音出しは録音を止めるまで続くので、区間の終わりがブロック末尾に
+#             接する。音出しの4件は末尾から 0.1〜7.6 秒、本物の演奏だった
+#             1件は 114.3 秒手前で終わっていた
+#   音量の起伏: 合奏は全員が同じフレーズを共有するので一緒に鳴り始めて一緒に
+#             止み、全体の音量が上下する。音出しは各自が無関係なので統計的に
+#             のっぺりする。音出し 1.68〜2.83 に対し演奏 4.31〜8.31 で、
+#             両者の間に 1.5 倍の隔たりがあった
+#
+# 起伏だけで判定すると、長く伸ばした弱奏の和音を誤って落とす危険がある
+# (マーラー2番4楽章のような場面)。そこで**両方の条件を満たす場合だけ**
+# 落とすことにし、対象も最後の playing 区間ひとつに限る。ブロック中間の
+# 楽曲には原理的に触れない。標本が10件と少ないための保守的な設計である。
+WARMUP_END_GAP_S = 30.0    # 区間の終わりがブロック末尾からこの秒数以内
+WARMUP_DYN_TH = 3.5        # 1秒平均RMSの標準偏差[dB]がこれ未満
+WARMUP_MIN_S = 10.0        # これより短い区間は統計が安定しないので判定しない
+# 起伏を測る長さ。閾値はこの長さで較正してあるので、変えると閾値も較正し直しになる。
+WARMUP_MAX_ANALYZE_S = 60.0
+
+LABELS = ("silence", "tuning", "speech", "playing", "warmup", "unclear")
 
 
 @dataclass
@@ -261,6 +288,89 @@ def fill_playing_gaps(spans: list[Span],
             merged.append(s)
     return merged, {"n_filled": n_filled, "seconds_filled": round(sec_filled, 1),
                     "max_fill_s": max_s}
+
+
+def dynamic_range(src: Path, start: float, end: float,
+                  max_s: float = WARMUP_MAX_ANALYZE_S) -> float:
+    """区間の「音量の起伏」= 1秒平均 RMS の標準偏差[dB]。
+
+    合奏なら全体が同時に鳴り始め同時に止むので値が大きく、各自が無関係に
+    音を出しているだけなら小さくなる。調和性が「音が鳴っているか」しか
+    見ないのに対し、こちらは「まとまっているか」を見る。
+
+    測るのは区間の**中央**から `max_s` 秒ぶんである。区間の端は静寂や発話への
+    遷移を含んでいて、それ自体が大きな音量変化として数えられてしまうため、
+    端を含めると音出しでも値が持ち上がる(実測で 2.83 が 3.58 になった)。
+    閾値もこの中央での測り方で較正してある。
+    """
+    dur = min(end - start, max_s)
+    if dur < 1.0:
+        return float("nan")
+    mid = (start + end) / 2.0
+    x = pf.decode(src, max(start, mid - dur / 2.0), dur)
+    n = (len(x) - pf.FRAME) // pf.HOP + 1
+    if n < 2:
+        return float("nan")
+    frames = np.lib.stride_tricks.as_strided(
+        x, shape=(n, pf.FRAME), strides=(x.strides[0] * pf.HOP, x.strides[0]),
+        writeable=False)
+    rms = 20.0 * np.log10(np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1)) + 1e-12)
+    w = int(round(pf.SR / pf.HOP))          # 1 秒ぶんのフレーム数
+    k = len(rms) // w
+    if k < 2:
+        return float("nan")
+    return float(rms[:k * w].reshape(k, w).mean(axis=1).std())
+
+
+def mark_trailing_warmup(src: Path, spans: list[Span], total: float,
+                         end_gap_s: float = WARMUP_END_GAP_S,
+                         dyn_th: float = WARMUP_DYN_TH,
+                         min_s: float = WARMUP_MIN_S) -> tuple[list[Span], dict]:
+    """ブロック末尾に張り付いた最後の `playing` 区間が音出しなら `warmup` にする。
+
+    位置と音量の起伏の**両方**が条件を満たす場合だけ落とす。対象は最後の
+    playing 区間ひとつに限るので、ブロック中間の楽曲には影響しない。
+    """
+    info = {"end_gap_s": end_gap_s, "dyn_th": dyn_th, "min_s": min_s,
+            "marked": False, "reason": "playing 区間がありません"}
+    idx = [i for i, s in enumerate(spans) if s.label == "playing"]
+    if not idx:
+        return spans, info
+
+    i = idx[-1]
+    s = spans[i]
+    gap = total - s.end
+    info.update({"span": [round(s.start, 2), round(s.end, 2)],
+                 "end_gap": round(gap, 1), "duration": round(s.duration, 1)})
+
+    if gap > end_gap_s:
+        info["reason"] = f"末尾から {gap:.1f} 秒手前で終わっており、音出しの位置ではありません"
+        return spans, info
+    if s.duration < min_s:
+        info["reason"] = f"{s.duration:.1f} 秒と短く、起伏の統計が安定しません"
+        return spans, info
+
+    dyn = dynamic_range(src, s.start, s.end)
+    info["dyn"] = None if dyn != dyn else round(dyn, 2)
+    if dyn != dyn:                                  # NaN
+        info["reason"] = "音量の起伏を測れませんでした"
+        return spans, info
+    if dyn >= dyn_th:
+        info["reason"] = f"音量の起伏 {dyn:.2f} が閾値 {dyn_th} 以上で、合奏と判断しました"
+        return spans, info
+
+    s.label = "warmup"
+    info.update({"marked": True, "seconds": round(s.duration, 1),
+                 "reason": f"末尾から {gap:.1f} 秒・音量の起伏 {dyn:.2f} で音出しと判断しました"})
+
+    merged: list[Span] = []
+    for sp in spans:
+        if merged and merged[-1].label == sp.label:
+            merged[-1].end = sp.end
+            merged[-1].confidence = max(merged[-1].confidence, sp.confidence)
+        else:
+            merged.append(sp)
+    return merged, info
 
 
 def summarize(spans: list[Span], total: float) -> dict:

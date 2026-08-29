@@ -296,6 +296,12 @@ def cmd_states2(args) -> None:
         meta["gap_fill"] = fill
         log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
             f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
+        spans, warm = states2_mod.mark_trailing_warmup(
+            src, spans, meta["duration"],
+            end_gap_s=args.warmup_gap, dyn_th=args.warmup_dyn)
+        meta["trailing_warmup"] = warm
+        log(f"  末尾の音出し判定: {'除去 ' + str(warm['seconds']) + ' 秒' if warm['marked'] else '該当なし'}"
+            f" — {warm['reason']}")
         summary = states2_mod.summarize(spans, meta["duration"])
         write_json(rdir / f"{key}_states2.json",
                    {"meta": meta, "summary": summary,
@@ -506,6 +512,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="この確信度以上を playing とする(高いほど厳しく捨てる)")
     sp.add_argument("--fill-gap", type=float, default=states2_mod.MAX_FILL_S,
                     help="演奏に挟まれたこの長さ以下の unclear を playing に埋め戻す")
+    sp.add_argument("--warmup-gap", type=float, default=states2_mod.WARMUP_END_GAP_S,
+                    help="最後の playing 区間がブロック末尾からこの秒数以内で終わるとき音出しを疑う")
+    sp.add_argument("--warmup-dyn", type=float, default=states2_mod.WARMUP_DYN_TH,
+                    help="音量の起伏[dB]がこれ未満なら音出しと判断する(0 で無効)")
     sp.set_defaults(func=cmd_states2)
     sp = digest_opts(common(sub.add_parser("digest2", help="ステージG-3: 新分類でのダイジェスト")))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")

@@ -26,6 +26,8 @@ LABEL_COLORS = {
     "tuning": "#8e44ad",
     "speech": "#e74c3c",
     "playing": "#2ecc71",
+    # G-14 で追加。ブロック末尾に張り付いた、各自の音出し。
+    "warmup": "#9a7fd0",
     # G-2 で追加。どのクラスの証拠も立たなかった区間。
     "unclear": "#f0a020",
 }
@@ -34,6 +36,7 @@ LABEL_JA = {
     "tuning": "チューニング",
     "speech": "発言",
     "playing": "演奏",
+    "warmup": "音出し",
     "unclear": "証拠不足",
 }
 
