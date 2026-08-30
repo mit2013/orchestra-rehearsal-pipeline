@@ -105,6 +105,15 @@ BRIDGE_MAX_S = 30.0
 # チューニングは残さないとダイジェストから外す判断ができなくなる。
 BRIDGE_STOP_LABELS = ("speech", "tuning")
 
+# 隙間の中で無音がこれより長く続いていたら橋渡ししない。
+#
+# 発言を含まないという条件だけでは、指揮者が黙って止めた場合を拾ってしまう。
+# 260829 の3つの通し稽古(演奏だと確認済み)にある隙間 126 件を調べると、
+# 中の連続無音は最長でも 8 秒だった(5 秒以内が 99%)。一方で通し稽古の外には
+# 14〜17 秒続く無音を含む隙間があった。演奏が続いている限り、無音が10秒以上
+# 途切れなく続くことはない。
+BRIDGE_MAX_SILENCE_RUN_S = 8.0
+
 # 無音とみなすレベル(分布の5%点からの上乗せ)
 SILENCE_MARGIN_DB = 6.0
 # チューニングとみなす A 一致率
@@ -377,7 +386,9 @@ def _merge_same(spans: list[Span]) -> list[Span]:
 
 
 def bridge_playing(spans: list[Span],
-                   max_s: float = BRIDGE_MAX_S) -> tuple[list[Span], dict]:
+                   max_s: float = BRIDGE_MAX_S,
+                   max_silence_run_s: float = BRIDGE_MAX_SILENCE_RUN_S,
+                   ) -> tuple[list[Span], dict]:
     """演奏に挟まれ、発言をひとつも含まない非 playing の連なりを playing に倒す。
 
     `fill_playing_gaps` との違いは2つある。silence をまたげること、そして
@@ -408,6 +419,9 @@ def bridge_playing(spans: list[Span],
         while j < len(out) and out[j].label != "playing":
             if out[j].label in BRIDGE_STOP_LABELS:
                 blocked = True
+            # 無音が長く続くなら演奏は止まっている。冒頭の定数の説明を参照。
+            if out[j].label == "silence" and out[j].duration > max_silence_run_s:
+                blocked = True
             j += 1
         if j < len(out) and not blocked:
             gap = out[j].start - out[i].end
@@ -420,7 +434,8 @@ def bridge_playing(spans: list[Span],
 
     return _merge_same(out), {"n_bridged": n_bridged,
                               "seconds_bridged": round(sec_bridged, 1),
-                              "bridge_max_s": max_s}
+                              "bridge_max_s": max_s,
+                              "bridge_max_silence_run_s": max_silence_run_s}
 
 
 def dynamic_range(src: Path, start: float, end: float,

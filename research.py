@@ -298,7 +298,8 @@ def cmd_states2(args) -> None:
         meta["gap_fill"] = fill
         log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
             f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
-        spans, br = states2_mod.bridge_playing(spans, max_s=args.bridge)
+        spans, br = states2_mod.bridge_playing(
+            spans, max_s=args.bridge, max_silence_run_s=args.bridge_max_silence)
         meta["bridge"] = br
         log(f"  発言を含まない非 playing を文脈で橋渡し: {br['n_bridged']} 件 / "
             f"{br['seconds_bridged']:.0f} 秒(上限 {br['bridge_max_s']:.0f} 秒)")
@@ -527,6 +528,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bridge", type=float, default=states2_mod.BRIDGE_MAX_S,
                     help="演奏に挟まれ発言を含まない非 playing を、この長さまで橋渡しする"
                          "(0 で無効)")
+    sp.add_argument("--bridge-max-silence", type=float,
+                    default=states2_mod.BRIDGE_MAX_SILENCE_RUN_S,
+                    help="隙間の中で無音がこれより長く続いていたら橋渡ししない[秒]")
     sp.add_argument("--hyst-enter", type=float, default=states2_mod.HYST_ENTER_H,
                     help="調和性がこの値以上で演奏に入る")
     sp.add_argument("--hyst-stay", type=float, default=states2_mod.HYST_STAY_H,
