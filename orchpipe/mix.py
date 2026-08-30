@@ -1,50 +1,107 @@
-"""外部マイク・内蔵マイクのミックス。
+"""外部マイク・内蔵マイクのミックスと、配布用のマスタリング。
 
-`source` の値で挙動が変わる:
+`source` の値で合成の仕方が変わる:
 
-- `ext_only` / `int_only`: 対応する正規化済みファイルをそのまま採用する。
-  合成しないのでピーク超過は起こりえない。
-- `mix`: ext_norm と int_norm を指定比率で加算合成し、合成後のピークが安全閾値を
-  超えていたら**信号全体を一律の線形ゲインで下げる**。コンプレッサーやリミッタの
-  ようなダイナミクスを変える処理は使わない。
+- `ext_only` / `int_only`: 対応する正規化済みファイルをそのまま素材にする
+- `mix`: ext_norm と int_norm を指定比率で加算合成する
 
-安全処理について(実装上の事実):
+合成のあと、**すべての source で共通に**ダイナミクス処理を1回だけ通す。
 
-比率の合計が 1.0 以下(6:4、8:2 など)の凸結合であれば、三角不等式より
-|w1·a + w2·b| ≤ w1·|a| + w2·|b| ≤ max(peak_a, peak_b) が常に成り立つため、
-合成ピークが入力のどちらのピークをも上回ることは数学的に起こりえない。
-実際に超過しうるのは比率の合計が 1.0 を超える設定(例 ext=1.0, int=0.8)である。
-比率は固定しない仕様なのでその設定は取りうる。したがってこの安全処理は必要だが、
-発動条件は「位相の重なり」ではなく「比率の合計が 1 を超えること」である。
+    ゲイン -> コンプレッサ(2:1、緩く) -> トゥルーピークリミッター(-1 dBTP)
+
+ここが配布する音そのものになる段階なので、コンプとリミッターはここに置く。
+`normalize` の段階でブロックごとに掛けてしまうと、`source=mix` のときに ext と int を
+別々に潰してから足すことになり、二重に効く。処理順序と、コンプによるラウドネスの
+低下をどう補正するかは `loudness.py` の冒頭を参照。
+
+旧実装にあった「合成ピークが安全閾値を超えたら全体をスケールダウンする」処理は
+廃止した。リミッターが天井を保証するので不要であり、一律スケールダウンは
+ブロック間の音量差を戻してしまう。
 """
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from .config import SessionConfig
-from .normalize import measure_peak_db, norm_path
-from .util import FFMPEG, PipelineError, log, run
+from .loudness import (
+    LIMITER_OVERSAMPLE,
+    DEFAULT_COMP_ATTACK_MS,
+    DEFAULT_COMP_KNEE_DB,
+    DEFAULT_COMP_RATIO,
+    DEFAULT_COMP_RELEASE_MS,
+    DEFAULT_COMP_THRESHOLD_OFFSET,
+    DEFAULT_TARGET_LUFS,
+    DEFAULT_TRUE_PEAK_DB,
+    master_chain,
+    measure,
+    measure_complex,
+)
+from .normalize import _reference_window, norm_path
+from .util import FFMPEG, PipelineError, log, probe_audio, read_json, run, write_json
 
-SAFE_PEAK_DB = -1.0
 FINAL_SUFFIX = "_final"
+# 統合ラウドネスがこれ以上ずれていたら異常とみなす(仕様は ±1 LU)。
+LOUDNESS_TOLERANCE_LU = 1.0
+# ゲイン補正を打ち切る残差と、その繰り返し回数の上限。
+GAIN_SETTLE_LU = 0.15
+GAIN_MAX_ITER = 3
 
 
 def final_path(trimmed: Path, block: str) -> Path:
     return trimmed / f"{block}{FINAL_SUFFIX}.wav"
 
 
-def _mix_filter(w_ext: float, w_int: float, gain_db: float | None = None) -> str:
-    chain = (
+def _trim_filter(start: float | None, dur: float | None) -> str | None:
+    """測定範囲を切り出すフィルタ。`-ss`/`-t` は入力単位なので filter_complex では使えない。"""
+    if start is None and dur is None:
+        return None
+    end = None if (start is None or dur is None) else start + dur
+    parts = []
+    if start is not None:
+        parts.append(f"start={start:.3f}")
+    if end is not None:
+        parts.append(f"end={end:.3f}")
+    return "atrim=" + ":".join(parts) + ",asetpts=N/SR/TB"
+
+
+def _premix_filter(cfg: SessionConfig, n_inputs: int) -> str:
+    """合成部分の filter_complex。出力ラベルは [m]。"""
+    if n_inputs == 1:
+        return "[0:a]anull[m]"
+    w_ext = float(cfg.mix_ratio["ext"])
+    w_int = float(cfg.mix_ratio["int"])
+    return (
         f"[0:a]volume={w_ext:.6f}[a];"
         f"[1:a]volume={w_int:.6f}[b];"
         f"[a][b]amix=inputs=2:duration=longest:normalize=0[m]"
     )
-    if gain_db is not None:
-        chain += f";[m]volume={gain_db:.6f}dB[out]"
-        return chain
-    return chain
+
+
+def _block_inputs(
+    block: str, cfg: SessionConfig, blocks: dict[tuple[str, str], Path]
+) -> tuple[list[Path], str]:
+    """このブロックの入力ファイルと、その説明文。"""
+    if cfg.source in ("ext_only", "int_only"):
+        group = "ext" if cfg.source == "ext_only" else "int"
+        src = blocks.get((block, group))
+        if src is None or not src.exists():
+            raise PipelineError(
+                f"{block}: source={cfg.source} に必要な {group} の正規化済みファイルが"
+                f"ありません({src if src else '未検出'})"
+            )
+        return [src], f"{src.name} ({cfg.source}、合成なし)"
+
+    ext_src = blocks.get((block, "ext"))
+    int_src = blocks.get((block, "int"))
+    for tag, p in (("ext", ext_src), ("int", int_src)):
+        if p is None or not p.exists():
+            raise PipelineError(
+                f"{block}: source=mix に必要な {tag} の正規化済みファイルがありません"
+            )
+    w_ext = float(cfg.mix_ratio["ext"])
+    w_int = float(cfg.mix_ratio["int"])
+    return [ext_src, int_src], f"ext×{w_ext:g} + int×{w_int:g}"
 
 
 def run_mix(
@@ -52,7 +109,14 @@ def run_mix(
     cfg: SessionConfig,
     groups: list[str] | None = None,
     blocks: dict[tuple[str, str], Path] | None = None,
-    safe_peak_db: float = SAFE_PEAK_DB,
+    target_lufs: float = DEFAULT_TARGET_LUFS,
+    true_peak_db: float = DEFAULT_TRUE_PEAK_DB,
+    ref_margin: float = 120.0,
+    comp_ratio: float = DEFAULT_COMP_RATIO,
+    comp_threshold_offset: float = DEFAULT_COMP_THRESHOLD_OFFSET,
+    comp_attack_ms: float = DEFAULT_COMP_ATTACK_MS,
+    comp_release_ms: float = DEFAULT_COMP_RELEASE_MS,
+    comp_knee_db: float = DEFAULT_COMP_KNEE_DB,
     force: bool = False,
 ) -> list[Path]:
     trimmed = outdir / "trimmed"
@@ -68,8 +132,24 @@ def run_mix(
             f"{trimmed} にミックス対象がありません。先に `normalize` を実行してください。"
         )
 
+    threshold_db = target_lufs + comp_threshold_offset
     log(f"ミックス開始: {len(names)} ブロック / source={cfg.source}")
+    log(f"  目標 {target_lufs:+.1f} LUFS / 天井 {true_peak_db:+.1f} dBTP / "
+        f"コンプ {comp_ratio:g}:1 しきい値 {threshold_db:+.1f} dBFS "
+        f"アタック {comp_attack_ms:g}ms リリース {comp_release_ms:g}ms "
+        f"ニー {comp_knee_db:g}dB")
+
+    def chain(gain_db: float, sample_rate: int, *, oversample: int = LIMITER_OVERSAMPLE,
+              with_limiter: bool = True) -> str:
+        return master_chain(
+            gain_db, threshold_db=threshold_db, true_peak_db=true_peak_db,
+            ratio=comp_ratio, attack_ms=comp_attack_ms, release_ms=comp_release_ms,
+            knee_db=comp_knee_db, sample_rate=sample_rate, oversample=oversample,
+            with_limiter=with_limiter,
+        )
+
     written: list[Path] = []
+    record: dict[str, dict] = {}
 
     for block in names:
         dst = final_path(trimmed, block)
@@ -78,89 +158,96 @@ def run_mix(
             written.append(dst)
             continue
 
-        if cfg.source in ("ext_only", "int_only"):
-            group = "ext" if cfg.source == "ext_only" else "int"
-            src = blocks.get((block, group))
-            if src is None or not src.exists():
-                raise PipelineError(
-                    f"{block}: source={cfg.source} に必要な {group} の正規化済みファイルがありません"
-                    f"({src if src else '未検出'})"
-                )
-            shutil.copyfile(src, dst)
-            log(f"  {dst.name}  <- {src.name} ({cfg.source}、合成なし)")
-            written.append(dst)
-            continue
+        inputs, desc = _block_inputs(block, cfg, blocks)
+        premix = _premix_filter(cfg, len(inputs))
 
-        # --- source == "mix" -------------------------------------------------
-        ext_src = blocks.get((block, "ext"))
-        int_src = blocks.get((block, "int"))
-        for tag, p in (("ext", ext_src), ("int", int_src)):
-            if p is None or not p.exists():
-                raise PipelineError(
-                    f"{block}: source=mix に必要な {tag} の正規化済みファイルがありません"
-                )
+        # 音出し・休憩の話し声が混じる guard 部分は測定から外す(normalize と同じ考え方)。
+        # ゲインの適用はブロック全体に対して行う。
+        info = probe_audio(inputs[0])
+        dur, sr = info["duration"], info["sample_rate"]
+        start, span, window_desc = _reference_window(dur, ref_margin)
+        trim = _trim_filter(start, span)
 
-        w_ext = float(cfg.mix_ratio["ext"])
-        w_int = float(cfg.mix_ratio["int"])
+        log(f"  {dst.name}  <- {desc}")
 
-        # 1パス目: 書き出さずに合成後のピークだけを測る。
-        peak = _measure_mix_peak(ext_src, int_src, w_ext, w_int)
-        if peak > safe_peak_db:
-            gain = safe_peak_db - peak
-            log(
-                f"  {block}: 合成ピーク {peak:+.2f} dBFS が安全閾値 {safe_peak_db:+.1f} dBFS を超過 "
-                f"-> 全体を {gain:+.2f} dB スケールダウン"
-            )
-        else:
-            gain = None
-            log(f"  {block}: 合成ピーク {peak:+.2f} dBFS(閾値 {safe_peak_db:+.1f} dBFS 以内、スケール調整なし)")
+        # 1. 素の統合ラウドネス -> 暫定ゲイン
+        pre = measure_complex(inputs, premix, "m", trim=trim)
+        gain = target_lufs - pre.integrated
+        log(f"    合成後 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
-        # 2パス目: 必要な補正ゲインを織り込んで書き出す。
-        out_label = "out" if gain is not None else "m"
-        run(
-            [
-                FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y",
-                "-i", str(ext_src), "-i", str(int_src),
-                "-filter_complex", _mix_filter(w_ext, w_int, gain),
-                "-map", f"[{out_label}]",
-                "-c:a", "pcm_f32le", "-rf64", "auto",
-                str(dst),
-            ],
-            desc=f"  {dst.name}  ext×{w_ext:g} + int×{w_int:g}",
-        )
-        final_peak = measure_peak_db(dst)
-        log(f"    書き出し後のピーク: {final_peak:+.2f} dBFS")
-        if final_peak > safe_peak_db + 0.05:
+        # 2. コンプを通すとラウドネスが下がるので、実際に通して測り直して補正する。
+        after_comp = None
+        for _ in range(GAIN_MAX_ITER):
+            # 下見なのでリミッターのオーバーサンプルは省く(統合ラウドネスは変わらない)。
+            after_comp = measure_complex(
+                inputs, f"{premix};[m]{chain(gain, sr, oversample=1)}[out]", "out", trim=trim)
+            resid = target_lufs - after_comp.integrated
+            log(f"    マスター通過後 {after_comp.integrated:+.1f} LUFS (残差 {resid:+.2f} LU)")
+            if abs(resid) <= GAIN_SETTLE_LU:
+                break
+            gain += resid
+            log(f"    ゲインを {gain:+.2f} dB に補正")
+
+        # 3. 書き出し
+        cmd = [FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y"]
+        for src in inputs:
+            cmd += ["-i", str(src)]
+        cmd += [
+            "-filter_complex", f"{premix};[m]{chain(gain, sr)}[out]",
+            "-map", "[out]",
+            "-c:a", "pcm_f32le", "-rf64", "auto",
+            str(dst),
+        ]
+        run(cmd, desc="    書き出し中...")
+
+        # 4. 検証。リミッターの動作量は「リミッター直前のトゥルーピーク」で見る。
+        after = measure(dst, start, span)
+        whole = measure(dst)
+        pre_limit = measure_complex(
+            inputs, f"{premix};[m]{chain(gain, sr, with_limiter=False)}[out]", "out",
+            trim=trim)
+        gr = max(0.0, pre_limit.true_peak - true_peak_db)
+        log(f"    結果 {after.describe()} / 全体では {whole.describe()}")
+        log(f"    リミッター直前のTP {pre_limit.true_peak:+.1f} dBFS "
+            f"-> 最大ゲインリダクション {gr:.1f} dB")
+
+        if abs(after.integrated - target_lufs) > LOUDNESS_TOLERANCE_LU:
             raise PipelineError(
-                f"{dst.name}: スケールダウン後もピークが {final_peak:+.2f} dBFS で "
-                f"閾値 {safe_peak_db:+.1f} dBFS を超えています"
+                f"{dst.name}: 統合ラウドネスが {after.integrated:+.1f} LUFS で "
+                f"目標 {target_lufs:+.1f} LUFS から {LOUDNESS_TOLERANCE_LU:.1f} LU 以上ずれています"
             )
+        if whole.true_peak > true_peak_db + 0.05:
+            raise PipelineError(
+                f"{dst.name}: トゥルーピークが {whole.true_peak:+.2f} dBFS で "
+                f"天井 {true_peak_db:+.1f} dBTP を超えています"
+            )
+
+        record[block] = {
+            "source": desc,
+            "window": window_desc,
+            "premix": pre.to_json(),
+            "gain_db": round(gain, 2),
+            "after": after.to_json(),
+            "after_whole": whole.to_json(),
+            "pre_limiter_true_peak_db": round(pre_limit.true_peak, 2),
+            "limiter_max_gr_db": round(gr, 2),
+        }
         written.append(dst)
 
+    if record:
+        path = outdir / "loudness.json"
+        data = read_json(path) if path.exists() else {}
+        data.setdefault("master", {}).update(record)
+        data["master_settings"] = {
+            "target_lufs": target_lufs,
+            "true_peak_db": true_peak_db,
+            "comp_ratio": comp_ratio,
+            "comp_threshold_db": round(threshold_db, 2),
+            "comp_attack_ms": comp_attack_ms,
+            "comp_release_ms": comp_release_ms,
+            "comp_knee_db": comp_knee_db,
+        }
+        write_json(path, data)
+        log(f"マスタリングの測定結果を保存しました: {path.name}")
+
     return written
-
-
-def _measure_mix_peak(ext_src: Path, int_src: Path, w_ext: float, w_int: float) -> float:
-    """合成結果を書き出さずにピークだけ測る(-f null で捨てる)。"""
-    import re
-    import subprocess
-
-    from .normalize import _PEAK_RE
-
-    cmd = [
-        FFMPEG, "-hide_banner", "-v", "info",
-        "-i", str(ext_src), "-i", str(int_src),
-        "-filter_complex", _mix_filter(w_ext, w_int) + ";[m]astats=measure_perchannel=none[s]",
-        "-map", "[s]", "-f", "null", "-",
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if proc.returncode != 0:
-        raise PipelineError(
-            "合成ピークの測定に失敗しました\n"
-            + proc.stderr.decode("utf-8", "replace").strip()[-800:]
-        )
-    m = _PEAK_RE.search(proc.stderr.decode("utf-8", "replace"))
-    if not m:
-        raise PipelineError("合成ピーク値を読み取れませんでした")
-    val = m.group(1).lower()
-    return float("-inf") if val.endswith("inf") else float(val)

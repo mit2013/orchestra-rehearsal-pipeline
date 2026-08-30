@@ -5,6 +5,11 @@ MP3(320kbps、ID3タグ付き)として `output/{date}/export/` に書き出す�
 
 1合奏ブロック = 1トラックとして扱う。`trimmed/` 配下の既存ファイルは読み取り専用で、
 このモジュールは一切変更・削除しない。
+
+`variant`(CLI では `--variant`)を渡すと、ファイル名の末尾と ID3 のタイトルに
+その名前が入る(`260829_前半_ラウドネス調整版.mp3`)。**既に配った音源を差し替えず、
+作り直したものを別版として並べて置く**ための仕組みである。名前が違えば Box も
+Drive も新規ファイルとして扱うので、団員が既に持っているファイルはそのまま残る。
 """
 
 from __future__ import annotations
@@ -68,6 +73,22 @@ def find_final_files(trimmed: Path) -> list[Path]:
     return [p for _, p in found]
 
 
+def find_wav_files(outdir: Path) -> list[Path]:
+    """`export/` に書き出し済みの WAV を名前順で返す(Drive へのアップロード入力)。
+
+    `trimmed/*_final.wav` から名前を組み直さないのは、`--variant` を付けたときに
+    別版が同じ名前になってしまい、**既に配った WAV を上書きする**ためである。
+    export の WAV は `_final.wav` の実体コピーなので中身は同一である。
+    """
+    export = outdir / "export"
+    if not export.is_dir():
+        raise PipelineError(f"{export} がありません。先に `export` を実行してください。")
+    files = sorted(p for p in export.iterdir() if p.is_file() and p.suffix.lower() == ".wav")
+    if not files:
+        raise PipelineError(f"{export} に WAV がありません。先に `export` を実行してください。")
+    return files
+
+
 def find_mp3_files(outdir: Path) -> list[Path]:
     """`export/` に書き出し済みの MP3 を名前順で返す(Box / Drive 共通の入力)。"""
     export = outdir / "export"
@@ -79,7 +100,7 @@ def find_mp3_files(outdir: Path) -> list[Path]:
     return files
 
 
-def plan_tracks(outdir: Path, date: str) -> list[Track]:
+def plan_tracks(outdir: Path, date: str, variant: str = "") -> list[Track]:
     """出力するトラックの一覧を組み立てる(まだ書き出さない)。"""
     trimmed = outdir / "trimmed"
     finals = find_final_files(trimmed)
@@ -103,13 +124,14 @@ def plan_tracks(outdir: Path, date: str) -> list[Track]:
 
     titles = block_titles(len(finals))
     export_dir = outdir / "export"
+    tail = f"_{variant}" if variant else ""
     return [
         Track(
             number=i,
             title=title,
             src=src,
-            wav=export_dir / f"{date}_{title}.wav",
-            mp3=export_dir / f"{date}_{title}.mp3",
+            wav=export_dir / f"{date}_{title}{tail}.wav",
+            mp3=export_dir / f"{date}_{title}{tail}.mp3",
         )
         for i, (src, title) in enumerate(zip(finals, titles), start=1)
     ]
@@ -141,8 +163,9 @@ def run_export(
     date: str,
     cfg: SessionConfig,
     force: bool = False,
+    variant: str = "",
 ) -> list[Track]:
-    tracks = plan_tracks(outdir, date)
+    tracks = plan_tracks(outdir, date, variant)
     export_dir = outdir / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
     year = year_from_date(date)
@@ -151,6 +174,7 @@ def run_export(
     log(
         f"エクスポート開始: {total} トラック / アルバム={date} / "
         f"団体={cfg.orchestra!r} / 年={year}"
+        + (f" / 版={variant}" if variant else "")
     )
 
     for t in tracks:
@@ -181,7 +205,7 @@ def run_export(
         write_tags(
             t.mp3,
             album=date,
-            title=t.title,
+            title=f"{t.title}({variant})" if variant else t.title,
             artist=cfg.orchestra,
             album_artist=cfg.orchestra,
             track=t.number,
