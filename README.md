@@ -318,14 +318,21 @@ WAV は帰宅後に原本から作る。
 #       microSD の TAKE を iPhone にコピーし、a-Shell で
 #       sh field_master.sh   -> 260829_proxy.mp3(3時間で約 413MiB)
 
-# 母艦: 届いたプロキシを取り込む
-.venv/bin/python pipeline.py field-receive --date 260829 --input ~/Downloads/260829_proxy.mp3
-.venv/bin/python pipeline.py propose  --date 260829 --splits 3
-# ここで境界を確認して confirmed.json を確定させる
+# 母艦: 置き場を見張り、届いたら受け取って境界レビューの手前まで進める
+.venv/bin/python pipeline.py field-watch --date 260829 --dir ~/Library/Mobile\ Documents/... --splits 3
+
+# ここで review_page.html を Artifact として公開し、iPhone で境界を確定する
+.venv/bin/python pipeline.py review-apply --date 260829 --input <ページから取り出したJSON>
+
 .venv/bin/python pipeline.py field-export --date 260829
 .venv/bin/python pipeline.py box-upload   --date 260829
 .venv/bin/python pipeline.py notify       --date 260829
 ```
+
+`field-watch` は `field-receive` → `propose` → `review-page` をまとめたもので、
+一つずつ実行してもよい。転送方式(iCloud Drive を監視するか Tailscale で置くか)は
+まだ決めていないが、どちらも「所定のフォルダにファイルが現れる」点は同じなので
+この形なら両方に乗る。
 
 プロキシに載せるのは**クリップを避けるための固定ゲイン(-14 dB)だけ**である。
 ラウドネス正規化・コンプ・リミッターは、境界が決まったあとに母艦がブロックごとに
@@ -348,6 +355,54 @@ WAV は帰宅後に原本から作る。
 
 `field-proxy` は母艦側で同じプロキシを作る(検証用、および iPhone が使えないときの
 代替)。`apply` にプロキシを渡すとエラーで止まる ― ブロック WAV は原本から切るため。
+
+### 律速は境界提案だった
+
+通しで走らせると、投入から境界レビューのページが出るまで 25 秒だった。転送も符号化も
+律速ではない。**律速は `propose` の境界が当たらないこと**である。260829 の自動提案は
+合奏1が 94.6 分(合奏1と休憩と合奏2をまたぐ)で、レビューページで秒単位に直せる幅を
+超えていた。対策は `--tuning-first`(下記)。
+
+## 境界レビューのページ
+
+```bash
+.venv/bin/python pipeline.py review-page  --date 260829     # HTML を組み立てる
+# Artifact として公開 -> iPhone で頭と尻を聴き、境界を動かして保存
+.venv/bin/python pipeline.py review-apply --date 260829 --input state.json
+```
+
+各ブロックの頭と尻について、境界の**前後45秒**を切り出して埋め込む。判定
+(よい / 切れている / 余分が長い)を押すだけでなく、**±5 / ±15 / ±30 秒のボタンで
+その場で境界を動かせる**。動かした結果の時刻と長さは表に出る。保存すると
+`artifact` capability でページ自身が新しい版になるので、その JSON を
+`review-apply` に渡せば `confirmed.json` に反映される(元は `.review_bak` に控える)。
+
+音源は結合済み WAV でもプロキシ MP3 でもよい。クリップはモノラル 96kbps で、
+6本を埋め込んで約 8MiB(Artifact の上限は 16MiB)。
+
+## チューニングを起点にした境界提案(`--tuning-first`)
+
+スコアからの区切り(合奏らしさ + Viterbi)は、休憩の話し声や長い部分練習で崩れる。
+一方**チューニングは合奏の直前に必ず現れ、合奏の中には現れない**。
+
+```bash
+.venv/bin/python pipeline.py propose --date 260829 --splits 3 --tuning-first
+```
+
+チューニング開始の5秒前を合奏の開始とし、終了は「次のチューニングの手前で合奏らしさが
+最後に閾値を超えた窓の終わり」とする。260829 での結果:
+
+| ブロック | 人が確定させた境界 | `--tuning-first` | 開始の差 | 終了の差 |
+|---|---|---|---|---|
+| 合奏1 | 00:01:17 – 00:42:40 | 00:01:17 – 00:44:21 | **0 秒** | +101 秒 |
+| 合奏2 | 00:47:08 – 01:33:15 | 00:47:08 – 01:34:51 | **0 秒** | +96 秒 |
+| 合奏3 | 01:42:15 – 02:59:45 | 01:42:15 – 03:00:04 | **0 秒** | +19 秒 |
+
+開始は3つとも完全に一致する。終了のずれは `--guard` を外側へ足しているぶんで、
+設計どおり「削りすぎない」側に出ている。
+
+**既定にはしていない。** 検証できたのが 260829 の1日だけだからである。チューニング
+検出の件数が `--splits` と食い違うときは従来の経路に落ちる。
 
 ## クラウドアップロード
 
@@ -482,6 +537,12 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `mix` | `--comp-attack` | 100 ms | コンプのアタック |
 | `mix` | `--comp-release` | 1000 ms | コンプのリリース |
 | `mix` | `--comp-knee` | 6 dB | コンプのニー幅 |
+| `propose` | `--tuning-first` | — | チューニングを合奏の開始として区間を組む |
+| `field-watch` | `--dir` | 必須 | プロキシの置き場を見張る |
+| `field-watch` | `--stable` | 15 秒 | サイズがこの秒数変わらなければ書き込み完了とみなす |
+| `field-watch` | `--receive-only` | — | 受け取るだけで propose / review-page を走らせない |
+| `review-page` | `--pre` / `--post` | 45 秒 | 境界の前後に含める長さ |
+| `review-apply` | `--input` | 必須 | ページから取り出した JSON |
 | `field-script` | `--takes` | 2 | その日の TAKE 数(`ingest.json` があればそちらが優先) |
 | `field-script` / `field-proxy` / `field-export` | `--gain` | -14 dB | プロキシに載せる固定ゲイン |
 | `field-receive` | `--input` | 必須 | 受け取ったプロキシ MP3 |
