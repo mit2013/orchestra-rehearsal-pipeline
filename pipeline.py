@@ -32,6 +32,7 @@ from orchpipe import config as config_mod
 from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
 from orchpipe import field as field_mod
+from orchpipe import review_page as review_mod
 from orchpipe import gdrive_upload as gdrive_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
@@ -43,7 +44,8 @@ from orchpipe import normalize as norm_mod
 from orchpipe import preview as preview_mod
 from orchpipe import segment as seg_mod
 from orchpipe.recorder_profiles import DEFAULT_PROFILE, PROFILES, get_profile
-from orchpipe.util import PipelineError, fmt_time, log, out_dir, read_json, write_json
+from orchpipe.util import (PipelineError, fmt_time, log, out_dir, parse_time,
+                           read_json, write_json)
 
 ROOT_DEFAULT = Path(__file__).resolve().parent
 
@@ -337,6 +339,102 @@ def cmd_field_receive(args) -> None:
     config_mod.ensure(outdir, args.root)
 
 
+def _review_blocks(outdir: Path, path: Path) -> list[dict]:
+    """レビュー対象の keep 区間。名前は export と同じ規則で付ける。"""
+    from orchpipe.apply import load_confirmed
+    from orchpipe.export import block_titles
+
+    keeps = load_confirmed(path, float("inf"))
+    titles = block_titles(len(keeps))
+    return [{"start": k["start"], "end": k["end"], "name": t,
+             "label": k.get("label", "")}
+            for k, t in zip(keeps, titles)]
+
+
+def cmd_review_page(args) -> None:
+    """ブロックの頭と尻を聴いて境界を決めるページを組み立てる。"""
+    outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
+    cfg = config_mod.load(outdir)
+    src = Path(args.source) if args.source else _require_merged(outdir, groups)[args.group]
+    given = Path(args.input) if args.input else None
+    if given is None:
+        for name in ("confirmed.json", "candidates.json"):
+            if (outdir / name).exists():
+                given = outdir / name
+                break
+    if given is None or not given.exists():
+        raise PipelineError(
+            f"{outdir} に confirmed.json も candidates.json もありません。"
+            "先に `propose` を実行してください。"
+        )
+    log(f"境界の入力: {given.name} / 音源: {src.name}")
+    blocks = _review_blocks(outdir, given)
+    dst = review_mod.build(
+        outdir, args.date, src, blocks, orchestra=cfg.orchestra,
+        pre_s=args.pre, post_s=args.post, bitrate=args.bitrate, force=args.force,
+    )
+    print()
+    print(f"=== 境界レビューのページ ({args.date}) ===")
+    for b in blocks:
+        print(f"  {b['name']:<6} {fmt_time(b['start'])} – {fmt_time(b['end'])}  "
+              f"({fmt_time(b['end'] - b['start'])})")
+    print(f"  {dst}")
+    print("  Artifact として公開すれば iPhone で判定できます。")
+
+
+def cmd_review_apply(args) -> None:
+    """レビューページに保存された判定を confirmed.json に反映する。"""
+    outdir = out_dir(args.root, args.date)
+    state = read_json(Path(args.input))
+    items = state.get("state", state).get("items", {})
+    if not items:
+        raise PipelineError(f"{args.input} に items がありません")
+
+    src = outdir / "confirmed.json"
+    if not src.exists():
+        raise PipelineError(f"{src} がありません")
+    data = read_json(src)
+    keeps = [d for d in data if str(d.get("action", "")).lower() == "keep"]
+
+    moved = []
+    for i, k in enumerate(keeps, start=1):
+        for kind, key in (("head", "start"), ("tail", "end")):
+            it = items.get(f"b{i}-{kind}") or {}
+            shift = float(it.get("shift") or 0)
+            if not shift:
+                continue
+            before = parse_time(k[key])
+            after = max(0.0, before + shift)
+            k[key] = fmt_time(after)
+            moved.append((i, kind, before, after, shift))
+
+    if not moved:
+        print("動かす境界はありませんでした。confirmed.json は変更していません。")
+        return
+
+    # remove 区間の端を、隣り合う keep に合わせて詰め直す。keep どうしが隣り合う
+    # ときは動かさない(どちらの移動も意図されたものなので上書きしてはいけない)。
+    for i, cur in enumerate(data):
+        if str(cur.get("action", "")).lower() != "remove":
+            continue
+        if i > 0 and str(data[i - 1].get("action", "")).lower() == "keep":
+            cur["start"] = data[i - 1]["end"]
+        if i + 1 < len(data) and str(data[i + 1].get("action", "")).lower() == "keep":
+            cur["end"] = data[i + 1]["start"]
+
+    if not args.force:
+        backup = src.with_suffix(".json.review_bak")
+        backup.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        log(f"元の境界を控えました: {backup.name}")
+    write_json(src, data)
+    print()
+    print(f"=== 境界を更新しました ({args.date}) ===")
+    for i, kind, before, after, shift in moved:
+        print(f"  ブロック{i} の{'頭' if kind == 'head' else '尻'}  "
+              f"{fmt_time(before)} -> {fmt_time(after)}  ({shift:+.0f} 秒)")
+
+
 def cmd_field_export(args) -> None:
     """プロキシ 1 本から確定境界でブロックを切り出し、配布用 MP3 にする。"""
     outdir = out_dir(args.root, args.date)
@@ -542,6 +640,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB)
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.set_defaults(func=cmd_field_proxy)
+
+    sp = common(sub.add_parser("review-page", help="ブロックの頭と尻を聴いて境界を決めるページを作る"))
+    sp.add_argument("--input", default=None,
+                    help="境界の入力 (既定: confirmed.json、無ければ candidates.json)")
+    sp.add_argument("--source", default=None, help="音源 (既定: 結合済み WAV かプロキシ)")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--pre", type=float, default=review_mod.PRE_S,
+                    help="境界の手前に含める長さ [秒]")
+    sp.add_argument("--post", type=float, default=review_mod.POST_S,
+                    help="境界の後ろに含める長さ [秒]")
+    sp.add_argument("--bitrate", default=review_mod.CLIP_BITRATE)
+    sp.set_defaults(func=cmd_review_page)
+
+    sp = common(sub.add_parser("review-apply", help="レビューページの判定を confirmed.json に反映"))
+    sp.add_argument("--input", required=True, help="ページから取り出した JSON")
+    sp.set_defaults(func=cmd_review_apply)
 
     sp = common(sub.add_parser("field-receive", help="届いたプロキシを取り込み ingest.json を書く"))
     sp.add_argument("--input", required=True, help="受け取ったプロキシ MP3")
