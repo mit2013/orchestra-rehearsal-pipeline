@@ -60,6 +60,78 @@ ONSET_SLOPE = 3.0
 # 補助指標が主指標を動かせる幅。主従を崩さないよう控えめにする。
 AUX_WEIGHT = 0.25
 
+# --- 調和性のヒステリシス ---------------------------------------------------
+# 調和性は合奏で 0.22〜0.30、打楽器が入ると 0.15〜0.20 に落ちる。しきい値
+# 0.205 のすぐ両側なので、ひと続きのフレーズの中で確信度が 1.00 と 0.00 を
+# 1〜2秒おきに往復する。260829 後半 00:31:31-00:32:01 は最大 -11.0 dBFS の
+# トゥッティだが、判定は 6 回反転していた。
+#
+# そこで入りと抜けでしきい値を分ける。いったん演奏と認めたら、明確に下回る
+# まで演奏のままにする。
+HYST_ENTER_H = 0.215
+HYST_STAY_H = 0.185
+
+# --- 音量による演奏の上書き -------------------------------------------------
+# 打楽器は倍音系列を持たないので調和性では拾えない。ティンパニの膜のモードは
+# 1 : 1.5 : 2 : 2.44 : 2.9 と整数比でないため、音程が聞こえていても調和性は
+# 0.00〜0.14 にしかならない(260829 3楽章冒頭で実測)。
+#
+# 指示書の当初案は「ブロック内の窓 RMS の上位10パーセンタイル」だったが、
+# 実測すると**ほとんど効かなかった**。ソロのティンパニは -20.0 dBFS で、
+# ブロックの 90% 点 -19.9 dBFS に届かない。トゥッティ(-11〜-17 dBFS)が
+# 上位を占めるので、ソロは相対的に「小さい音」になってしまう。
+#
+# 代わりに無音閾値からの相対量で持つ。260829 後半では、この値で拾われる
+# 発言窓は 309 窓中 2 窓(0.6%)しかなかった。
+LOUD_MARGIN_DB = 14.0
+
+# --- 文脈による橋渡し -------------------------------------------------------
+# 弱音のトレモロは、窓ひとつを見る限り本物の無音と区別がつかない。
+# 260829 1楽章 00:45:56-00:46:40(人手確認で「44秒間ずっと演奏中」)の実測:
+#
+#            RMS     調和性   安定性   フラックス
+#   ppトレモロ  -50.7   0.151   0.878   0.206
+#   本物の無音  -51.5   0.159   0.825   0.217
+#
+# どの指標でも分離しない。救えるのは文脈だけである。そこで **playing に挟まれ、
+# 発言をひとつも含まない**非 playing の連なりを playing に倒す。発言を含む
+# 場合に倒さないのは、指揮者が止めて指示している場面をそのまま残すためで、
+# これが誤って演奏を作り出さないための主たる歯止めになっている。
+#
+# 30 秒で効果が飽和した(45/60/90 秒にしても結果が変わらない)ため、最も
+# 弱い設定として 30 秒を既定にする。黙って止めた場合に飲み込む量の上限でもある。
+BRIDGE_MAX_S = 30.0
+# 橋渡しを止めるクラス。発言は「指揮者が止めている」ことの証拠であり、
+# チューニングは残さないとダイジェストから外す判断ができなくなる。
+BRIDGE_STOP_LABELS = ("speech", "tuning")
+
+# 隙間の中で無音がこれより長く続いていたら橋渡ししない。
+#
+# 発言を含まないという条件だけでは、指揮者が黙って止めた場合を拾ってしまう。
+# 260829 の3つの通し稽古(演奏だと確認済み)にある隙間 126 件を調べると、
+# 中の連続無音は最長でも 8 秒だった(5 秒以内が 99%)。一方で通し稽古の外には
+# 14〜17 秒続く無音を含む隙間があった。演奏が続いている限り、無音が10秒以上
+# 途切れなく続くことはない。
+BRIDGE_MAX_SILENCE_RUN_S = 8.0
+
+# 橋渡しの前に落とす playing の断片、および橋渡しに必要な前後の演奏の長さ。
+#
+# 発言も長い無音も含まない隙間でも、部分練習の日には待ち時間を拾ってしまう。
+# 260802 合奏2 で橋渡しが足した箇所を人が聴いたところ、11件中8件が「無駄時間
+# (入れてはいけない)」、残り3件も「範囲の終わりかけに演奏が始まる」だけで、
+# 「演奏している」は0件だった。
+#
+# 実測で分かったのは、それらの隙間の**後ろ側の playing が極端に短い**ことである
+# (中央 1.5 秒、95%点 3.7 秒)。演奏が再開したのではなく、単発のノイズが
+# playing と判定されているだけで、その両側の待ち時間が橋渡しされていた。
+# 一方 260829 の通し稽古で救うべき隙間は、後ろ側の playing が中央 22.5 秒あった。
+#
+# そこで橋渡しの前に短い playing の断片を落とし、さらに前後の演奏が十分に
+# 続いていることを条件にする。この2つで 260802 の8件はすべて弾ける。
+BRIDGE_MIN_PLAY_S = 3.0     # これより短い playing は断片とみなし、橋渡しの足場にしない
+BRIDGE_MIN_FLANK_S = 10.0   # 前後の演奏がともにこの長さ以上でなければ橋渡ししない
+BRIDGE_PASSES = 4           # 橋渡しで足場が伸びると次が成立するので繰り返す
+
 # 無音とみなすレベル(分布の5%点からの上乗せ)
 SILENCE_MARGIN_DB = 6.0
 # チューニングとみなす A 一致率
@@ -142,6 +214,21 @@ def playing_confidence(h: np.ndarray, stab: np.ndarray, onset: np.ndarray) -> np
     return np.clip(main * (1.0 - AUX_WEIGHT) + main * aux * AUX_WEIGHT * 2.0, 0.0, 1.0)
 
 
+def harmonic_hysteresis(h: np.ndarray,
+                        enter: float = HYST_ENTER_H,
+                        stay: float = HYST_STAY_H) -> np.ndarray:
+    """調和性のヒステリシス。`enter` で演奏に入り、`stay` を割るまで抜けない。
+
+    しきい値ぎわで判定が往復するのを止めるためのもの。冒頭の定数の説明を参照。
+    """
+    out = np.zeros(len(h), dtype=bool)
+    on = False
+    for i, v in enumerate(h):
+        on = (v >= stay) if on else (v >= enter)
+        out[i] = on
+    return out
+
+
 def _windows(fs: pf.FrameSeries, win_s: float, hop_s: float):
     """フレーム列を窓ごとの統計に畳む。"""
     fps = fs.fps
@@ -177,6 +264,9 @@ def classify(
     win_s: float = WIN_S,
     hop_s: float = HOP_S,
     play_threshold: float = 0.5,
+    hyst_enter: float = HYST_ENTER_H,
+    hyst_stay: float = HYST_STAY_H,
+    loud_margin_db: float = LOUD_MARGIN_DB,
 ) -> tuple[list[Span], dict]:
     """ブロック全体を分類する。戻り値は (区間リスト, メタ情報)。"""
     log(f"  特徴量を抽出します: {src.name}")
@@ -186,6 +276,14 @@ def classify(
     silence_db = float(np.percentile(fs.rms_db, 5)) + SILENCE_MARGIN_DB
     conf = playing_confidence(h, stab, onset)
 
+    # 演奏の証拠は3つの経路のいずれかで立つ。
+    #   1. 確信度がしきい値以上(従来どおり)
+    #   2. 調和性のヒステリシスで演奏の途中にいる
+    #   3. 無音閾値を大きく超える音量が出ている(打楽器)
+    evidence = ((conf >= play_threshold)
+                | harmonic_hysteresis(h, hyst_enter, hyst_stay)
+                | (rms >= silence_db + loud_margin_db))
+
     is_speech = np.zeros(len(times), dtype=bool)
     for a, b in speech_spans:
         is_speech |= (times + win_s > a) & (times < b)
@@ -193,8 +291,14 @@ def classify(
     labels = np.full(len(times), "unclear", dtype=object)
     scores = np.zeros(len(times))
 
-    # 証拠の強い順に確定させる。playing は最後で、しかも閾値を満たすものだけ。
-    sil = rms < silence_db
+    # 証拠の強い順に確定させる。playing は最後で、しかも証拠が立つものだけ。
+    #
+    # ただし無音判定は**演奏の証拠に譲る**。マーラー2番4楽章(Urlicht)のような
+    # 弱奏は、調和性が 0.20〜0.23 と演奏を示しているのにレベルが無音閾値を割る。
+    # 260829 後半のアタッカ以降では窓の 13.1% が silence とされ、そのうち
+    # 29/62 は調和性がしきい値を超えていた。順序をそのままにすると、演奏の証拠が
+    # 立っていてもレベルだけで打ち消されてしまう。
+    sil = (rms < silence_db) & ~(h > H_CENTER)
     labels[sil] = "silence"
     scores[sil] = 1.0 - conf[sil]
 
@@ -223,10 +327,10 @@ def classify(
         i = j
 
     rest = (labels == "unclear") | ((~sil) & (~tun) & (~sp))
-    play = rest & (conf >= play_threshold)
+    play = rest & evidence
     labels[play] = "playing"
     scores[play] = conf[play]
-    unclear = rest & (conf < play_threshold)
+    unclear = rest & (~evidence)
     labels[unclear] = "unclear"
     scores[unclear] = conf[unclear]
 
@@ -252,6 +356,10 @@ def classify(
         "silence_db": round(silence_db, 2),
         "play_threshold": play_threshold,
         "h_center": H_CENTER,
+        "hyst_enter_h": hyst_enter,
+        "hyst_stay_h": hyst_stay,
+        "loud_margin_db": loud_margin_db,
+        "loud_override_db": round(silence_db + loud_margin_db, 2),
         "n_windows": int(len(times)),
         "confidence_percentiles": {
             str(p): round(float(np.percentile(conf, p)), 3) for p in (10, 25, 50, 75, 90)
@@ -279,6 +387,12 @@ def fill_playing_gaps(spans: list[Span],
             n_filled += 1
             sec_filled += s.duration
 
+    merged = _merge_same(spans)
+    return merged, {"n_filled": n_filled, "seconds_filled": round(sec_filled, 1),
+                    "max_fill_s": max_s}
+
+
+def _merge_same(spans: list[Span]) -> list[Span]:
     merged: list[Span] = []
     for s in spans:
         if merged and merged[-1].label == s.label:
@@ -286,8 +400,85 @@ def fill_playing_gaps(spans: list[Span],
             merged[-1].confidence = max(merged[-1].confidence, s.confidence)
         else:
             merged.append(s)
-    return merged, {"n_filled": n_filled, "seconds_filled": round(sec_filled, 1),
-                    "max_fill_s": max_s}
+    return merged
+
+
+def bridge_playing(spans: list[Span],
+                   max_s: float = BRIDGE_MAX_S,
+                   max_silence_run_s: float = BRIDGE_MAX_SILENCE_RUN_S,
+                   min_play_s: float = BRIDGE_MIN_PLAY_S,
+                   min_flank_s: float = BRIDGE_MIN_FLANK_S,
+                   passes: int = BRIDGE_PASSES,
+                   ) -> tuple[list[Span], dict]:
+    """演奏に挟まれ、発言をひとつも含まない非 playing の連なりを playing に倒す。
+
+    `fill_playing_gaps` との違いは2つある。silence をまたげること、そして
+    unclear と silence が入り混じった連なりをひとまとまりとして扱うことである。
+
+    なぜ必要か。弱音のトレモロは、窓ひとつを見る限り本物の無音と区別がつかない
+    (冒頭の `BRIDGE_MAX_S` の説明を参照)。レベルでもスペクトルでも分離しない
+    ので、「前後で演奏していて、誰も喋っていない」という文脈だけが手がかりになる。
+
+    なぜ安全か。指揮者が止めれば必ず何か言う。260829 の3つの通し稽古(計 39.8 分)
+    では、範囲の中に発言が 1.0 秒しかなく、それも1楽章の末尾だった。発言を含む
+    連なりを対象から外すことで、本物の停止はそのまま残る。黙って止めた場合に
+    飲み込む量は `max_s` で頭打ちになる。
+
+    `speech` に加えて `tuning` も橋渡しを止める。チューニングは前後を演奏に
+    挟まれるうえ発言を伴わないので、これを除かないと playing に塗り潰されて
+    しまい、ダイジェストからチューニングを外す判断ができなくなる。
+    """
+    out = [Span(s.start, s.end, s.label, s.confidence) for s in spans]
+
+    # 単発のノイズを足場にしないよう、短い playing は先に断片として下ろす。
+    n_dropped, sec_dropped = 0, 0.0
+    for s in out:
+        if s.label == "playing" and s.duration < min_play_s:
+            s.label = "unclear"
+            n_dropped += 1
+            sec_dropped += s.duration
+    out = _merge_same(out)
+
+    n_bridged, sec_bridged = 0, 0.0
+    for _ in range(max(1, passes)):
+        changed = False
+        i = 0
+        while i < len(out):
+            if out[i].label != "playing":
+                i += 1
+                continue
+            j = i + 1
+            blocked = False
+            while j < len(out) and out[j].label != "playing":
+                if out[j].label in BRIDGE_STOP_LABELS:
+                    blocked = True
+                # 無音が長く続くなら演奏は止まっている。冒頭の定数の説明を参照。
+                if out[j].label == "silence" and out[j].duration > max_silence_run_s:
+                    blocked = True
+                j += 1
+            if j < len(out) and not blocked:
+                gap = out[j].start - out[i].end
+                flank = min(out[i].duration, out[j].duration)
+                if 0 < gap <= max_s and flank >= min_flank_s:
+                    for k in range(i + 1, j):
+                        sec_bridged += out[k].duration
+                        out[k].label = "playing"
+                    n_bridged += 1
+                    changed = True
+            i = j
+        # 橋渡しで足場が伸びると隣の隙間が条件を満たすようになる。
+        out = _merge_same(out)
+        if not changed:
+            break
+
+    return out, {"n_bridged": n_bridged,
+                 "seconds_bridged": round(sec_bridged, 1),
+                 "n_fragments_dropped": n_dropped,
+                 "seconds_fragments_dropped": round(sec_dropped, 1),
+                 "bridge_max_s": max_s,
+                 "bridge_max_silence_run_s": max_silence_run_s,
+                 "bridge_min_play_s": min_play_s,
+                 "bridge_min_flank_s": min_flank_s}
 
 
 def dynamic_range(src: Path, start: float, end: float,

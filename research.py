@@ -291,11 +291,22 @@ def cmd_states2(args) -> None:
 
         spans, meta = states2_mod.classify(
             src, speech, win_s=args.win, hop_s=args.hop,
-            play_threshold=args.play_threshold)
+            play_threshold=args.play_threshold,
+            hyst_enter=args.hyst_enter, hyst_stay=args.hyst_stay,
+            loud_margin_db=args.loud_margin)
         spans, fill = states2_mod.fill_playing_gaps(spans, max_s=args.fill_gap)
         meta["gap_fill"] = fill
         log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
             f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
+        spans, br = states2_mod.bridge_playing(
+            spans, max_s=args.bridge, max_silence_run_s=args.bridge_max_silence,
+            min_play_s=args.bridge_min_play, min_flank_s=args.bridge_min_flank)
+        meta["bridge"] = br
+        log(f"  短い playing を断片として除去: {br['n_fragments_dropped']} 件 / "
+            f"{br['seconds_fragments_dropped']:.0f} 秒(下限 {br['bridge_min_play_s']:.0f} 秒)")
+        log(f"  発言を含まない非 playing を文脈で橋渡し: {br['n_bridged']} 件 / "
+            f"{br['seconds_bridged']:.0f} 秒(上限 {br['bridge_max_s']:.0f} 秒 / "
+            f"前後 {br['bridge_min_flank_s']:.0f} 秒以上)")
         spans, warm = states2_mod.mark_trailing_warmup(
             src, spans, meta["duration"],
             end_gap_s=args.warmup_gap, dyn_th=args.warmup_dyn)
@@ -345,6 +356,12 @@ def cmd_digest2(args) -> None:
         dst = rdir / f"{key}_digest2.wav"
         log(f"  {key}: playing {len([s for s in spans if s.label=='playing'])} 区間 "
             f"-> マージン統合後 {len(ranges)} 範囲")
+        # チューニングの除外は最後に当てる。分類の結果を問わず範囲から落とす。
+        if args.head_skip >= 0:
+            until, why = digest_mod.head_tuning_end(p, fallback_s=args.head_skip)
+            before = len(ranges)
+            ranges = digest_mod.drop_head(ranges, until)
+            log(f"    冒頭を除外: {why} -> 範囲 {before} から {len(ranges)}")
         info = digest_mod.build_digest(p, ranges, dst, crossfade=args.crossfade)
         kept = info["kept_seconds"] - info.get("crossfade_loss", 0.0)
         rows.append({"block": key, "original_sec": round(total, 1),
@@ -512,6 +529,22 @@ def build_parser() -> argparse.ArgumentParser:
                     help="この確信度以上を playing とする(高いほど厳しく捨てる)")
     sp.add_argument("--fill-gap", type=float, default=states2_mod.MAX_FILL_S,
                     help="演奏に挟まれたこの長さ以下の unclear を playing に埋め戻す")
+    sp.add_argument("--bridge", type=float, default=states2_mod.BRIDGE_MAX_S,
+                    help="演奏に挟まれ発言を含まない非 playing を、この長さまで橋渡しする"
+                         "(0 で無効)")
+    sp.add_argument("--bridge-max-silence", type=float,
+                    default=states2_mod.BRIDGE_MAX_SILENCE_RUN_S,
+                    help="隙間の中で無音がこれより長く続いていたら橋渡ししない[秒]")
+    sp.add_argument("--bridge-min-play", type=float, default=states2_mod.BRIDGE_MIN_PLAY_S,
+                    help="これより短い playing は断片とみなし、橋渡しの足場にしない[秒]")
+    sp.add_argument("--bridge-min-flank", type=float, default=states2_mod.BRIDGE_MIN_FLANK_S,
+                    help="橋渡しに必要な前後の演奏の長さ[秒]")
+    sp.add_argument("--hyst-enter", type=float, default=states2_mod.HYST_ENTER_H,
+                    help="調和性がこの値以上で演奏に入る")
+    sp.add_argument("--hyst-stay", type=float, default=states2_mod.HYST_STAY_H,
+                    help="調和性がこの値を割るまで演奏のままにする")
+    sp.add_argument("--loud-margin", type=float, default=states2_mod.LOUD_MARGIN_DB,
+                    help="無音閾値からこれだけ上のレベルは調和性を問わず playing とする")
     sp.add_argument("--warmup-gap", type=float, default=states2_mod.WARMUP_END_GAP_S,
                     help="最後の playing 区間がブロック末尾からこの秒数以内で終わるとき音出しを疑う")
     sp.add_argument("--warmup-dyn", type=float, default=states2_mod.WARMUP_DYN_TH,
@@ -519,6 +552,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_states2)
     sp = digest_opts(common(sub.add_parser("digest2", help="ステージG-3: 新分類でのダイジェスト")))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--head-skip", type=float, default=digest_mod.HEAD_SKIP_S,
+                    help="冒頭のチューニングを検出できなかったときに落とす長さ[秒]。"
+                         "負の値で冒頭除外そのものを無効にする")
     sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S,
                     help="予備拍リードタイム[秒]。演奏開始の手前を常にこれだけ残す")
     sp.add_argument("--tail", type=float, default=digest_mod.TAIL_S,
