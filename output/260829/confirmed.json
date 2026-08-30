@@ -2,39 +2,55 @@
   {
     "index": 1,
     "start": "00:00:00",
-    "end": "00:08:42",
+    "end": "00:01:17",
     "label": "音出し",
     "action": "remove",
     "confidence": 1.0
   },
   {
     "index": 2,
-    "start": "00:08:42",
-    "end": "01:30:49",
+    "start": "00:01:17",
+    "end": "00:42:40",
     "label": "合奏1",
     "action": "keep",
     "confidence": 1.0
   },
   {
     "index": 3,
-    "start": "01:30:49",
-    "end": "01:40:38",
+    "start": "00:42:40",
+    "end": "00:47:08",
     "label": "休憩",
     "action": "remove",
     "confidence": 1.0
   },
   {
     "index": 4,
-    "start": "01:40:38",
-    "end": "03:04:00",
+    "start": "00:47:08",
+    "end": "01:33:15",
     "label": "合奏2",
     "action": "keep",
     "confidence": 1.0
   },
   {
     "index": 5,
-    "start": "03:04:00",
-    "end": "03:05:36",
+    "start": "01:33:15",
+    "end": "01:42:15",
+    "label": "休憩",
+    "action": "remove",
+    "confidence": 1.0
+  },
+  {
+    "index": 6,
+    "start": "01:42:15",
+    "end": "02:59:45",
+    "label": "合奏3",
+    "action": "keep",
+    "confidence": 1.0
+  },
+  {
+    "index": 7,
+    "start": "02:59:45",
+    "end": "03:00:24",
     "label": "片付け",
     "action": "remove",
     "confidence": 1.0

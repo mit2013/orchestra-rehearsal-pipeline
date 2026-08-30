@@ -5,7 +5,7 @@
     orchestra-recording-pipeline/   自動化専用のルート(旧名: 練習録音)
       {orchestra}/                  session_config の orchestra から自動生成
         {date}/
-          WAV/   動画担当向け。trimmed/*_final.wav を直接アップロード
+          WAV/   動画担当向け。export/*.wav をアップロード
           MP3/   団員へ個別共有する用。export/*.mp3 をアップロード
 
 共有リンクは2つ設定する({date} フォルダと {date}/MP3 フォルダ)。どちらも
@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from .config import SessionConfig
-from .export import block_titles, find_final_files, find_mp3_files
+from .export import find_mp3_files, find_wav_files
 from .gdrive_client import (
     FOLDER_MIME,
     LEGACY_ROOT_NAME,
@@ -58,15 +58,8 @@ def local_md5(path: Path) -> str:
 
 
 def plan_wav(outdir: Path, date: str) -> list[tuple[Path, str]]:
-    """(ローカルの _final.wav, Drive 上の表示名)。タイトル採番はフェーズ2と同じ。"""
-    finals = find_final_files(outdir / "trimmed")
-    if not finals:
-        raise PipelineError(
-            f"{outdir/'trimmed'} に *_final.wav がありません。"
-            "先に `normalize` と `mix` を実行してください。"
-        )
-    titles = block_titles(len(finals))
-    return [(src, f"{date}_{title}.wav") for src, title in zip(finals, titles)]
+    """(ローカルの WAV, Drive 上の表示名)。export/ のファイル名をそのまま使う。"""
+    return [(p, p.name) for p in find_wav_files(outdir)]
 
 
 def plan_mp3(outdir: Path) -> list[tuple[Path, str]]:

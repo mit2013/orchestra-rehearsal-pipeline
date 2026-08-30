@@ -1,16 +1,23 @@
-"""トラック単位のピーク正規化。
+"""トラック単位のラウドネス正規化。
 
 `apply` が出力した `trimmed/` 配下の各ブロックについて、ext/int それぞれ独立に
-ピークを -1 dBFS に合わせる。
+**統合ラウドネス**を目標値(既定 -20 LUFS)に合わせる。ピーク正規化ではない理由は
+`loudness.py` の冒頭を参照。
 
-基準値の算出範囲と適用範囲を分けているのが要点:
+基準値の算出範囲と適用範囲を分けているのは従来どおり:
 
-- **算出**: guard(既定120秒)で外側に広げた部分には音出しや休憩が混入している
-  可能性があり、そこが最大ピークだと本編が不当に小さくなる。したがって前後の
-  guard 相当を除いた中央部分だけからピークを測る。
+- **算出**: guard(既定120秒)で外側に広げた部分には音出しや休憩の話し声が混入して
+  いる。EBU R128 のゲーティングでも人の声は落ちないので、前後の guard 相当を除いた
+  中央部分だけから測る。
 - **適用**: ゲイン自体はブロック全体(guard 部分を含む)に一律で掛ける。
 
-ダイナミクスを変える処理(コンプ・リミッタ)は使わず、一律ゲインのみ。
+**この段階ではダイナミクスを変えない。** コンプレッサとリミッターは、実際に配布する
+信号ができあがる `mix` の段階で1回だけ通す(`loudness.py` の「処理の順序」を参照)。
+したがってここの出力 `_norm.wav` は 0 dBFS を超えうる。32bit float なので保持される。
+
+`session_config.json` の `normalize_scope` は**使わない**。ブロックごとに目標
+ラウドネスへ合わせるので、日付全体で基準をそろえる必要がなくなった。キー自体は
+既存の設定ファイルとの互換のために残してあるが、値は無視される。
 """
 
 from __future__ import annotations
@@ -19,17 +26,21 @@ import re
 import subprocess
 from pathlib import Path
 
-from .util import FFMPEG, PipelineError, log, probe_audio, run
+from .loudness import DEFAULT_TARGET_LUFS, Loudness, measure
+from .util import FFMPEG, PipelineError, log, probe_audio, run, write_json
 
-TARGET_DB = -1.0
 NORM_SUFFIX = "_norm"
 
 _PEAK_RE = re.compile(r"Peak level dB:\s*(-?inf|-?\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def measure_peak_db(path: Path, start: float | None = None, dur: float | None = None) -> float:
-    """指定範囲のピークを dBFS で返す。32bit float なので 0 dBFS 超も正しく返る。"""
-    cmd = [FFMPEG, "-hide_banner", "-v", "info"]
+    """指定範囲のピークを dBFS で返す。32bit float なので 0 dBFS 超も正しく返る。
+
+    正規化の基準には使わなくなったが、素材が 0 dBFS を超えているかの確認と
+    `mix.py` の安全処理で使うため残してある。
+    """
+    cmd = [FFMPEG, "-hide_banner", "-v", "info", "-nostats"]
     if start is not None:
         cmd += ["-ss", f"{start:.3f}"]
     if dur is not None:
@@ -73,7 +84,7 @@ def norm_path(src: Path) -> Path:
 
 
 def _reference_window(dur: float, ref_margin: float) -> tuple[float | None, float | None, str]:
-    """基準ピークを測る範囲。中央部分が短すぎるときは全体から測る。"""
+    """基準ラウドネスを測る範囲。中央部分が短すぎるときは全体から測る。"""
     if dur > 2 * ref_margin + 30.0:
         span = dur - 2 * ref_margin
         return ref_margin, span, f"中央 {span/60:.1f}分 (前後 {ref_margin:.0f}秒を除外)"
@@ -83,9 +94,8 @@ def _reference_window(dur: float, ref_margin: float) -> tuple[float | None, floa
 def run_normalize(
     outdir: Path,
     groups: list[str],
-    target_db: float = TARGET_DB,
+    target_lufs: float = DEFAULT_TARGET_LUFS,
     ref_margin: float = 120.0,
-    scope: str = "date",
     force: bool = False,
 ) -> dict[tuple[str, str], Path]:
     trimmed = outdir / "trimmed"
@@ -96,64 +106,42 @@ def run_normalize(
         )
 
     log(
-        f"正規化開始: {len(files)} ファイル / 目標 {target_db:+.1f} dBFS / "
-        f"基準除外マージン {ref_margin:.0f}秒 / 基準範囲 {scope}"
+        f"正規化開始: {len(files)} ファイル / 目標 {target_lufs:+.1f} LUFS / "
+        f"基準除外マージン {ref_margin:.0f}秒"
     )
 
-    # --- 1. まず全ブロックの基準ピークを測る -------------------------------
-    # scope="date" では系統内の最大ピークが必要なので、書き出す・書き出さないに
-    # かかわらず全ブロックを測っておかないと基準が決まらない。
-    peaks: dict[tuple[str, str], float] = {}
+    # --- 1. 基準ラウドネスを測る -------------------------------------------
+    stats: dict[tuple[str, str], Loudness] = {}
     windows: dict[tuple[str, str], str] = {}
     for key, src in sorted(files.items()):
         dur = probe_audio(src)["duration"]
         start, span, desc = _reference_window(dur, ref_margin)
-        peaks[key] = measure_peak_db(src, start, span)
+        stats[key] = measure(src, start, span)
         windows[key] = desc
+        log(f"  測定 {src.name}: {stats[key].describe()}  基準={desc}")
 
-    # --- 2. ゲインを決める --------------------------------------------------
-    gains: dict[tuple[str, str], float] = {}
-    if scope == "date":
-        # 系統ごとに、全ブロックの本編ピークの最大値を基準にする。同じゲインを
-        # その系統の全ブロックに掛けるので、ブロック間の音量差が元のまま残る。
-        for group in groups:
-            voiced = [(b, p) for (b, g), p in peaks.items() if g == group and p != float("-inf")]
-            if not voiced:
-                log(f"  [{group}] 有音のブロックがありません。この系統はスキップします。")
-                continue
-            ref_block, ref_peak = max(voiced, key=lambda x: x[1])
-            gain = target_db - ref_peak
-            for b, g in peaks:
-                if g == group:
-                    gains[(b, g)] = gain
-            others = ", ".join(
-                f"{b}={p:+.2f}" for b, p in sorted(voiced) if b != ref_block
-            )
-            log(
-                f"  [{group}] 基準ピーク {ref_peak:+.2f} dBFS ← {ref_block} "
-                f"({len(voiced)} ブロック中の最大{'; 他: ' + others if others else ''}) "
-                f"-> 系統共通ゲイン {gain:+.2f} dB"
-            )
-    else:
-        for key, p in peaks.items():
-            if p != float("-inf"):
-                gains[key] = target_db - p
-
-    # --- 3. 適用 ------------------------------------------------------------
+    # --- 2. 適用 ------------------------------------------------------------
     out: dict[tuple[str, str], Path] = {}
+    record: dict[str, dict] = {}
     for (block, group), src in sorted(files.items()):
         key = (block, group)
         dst = norm_path(src)
         out[key] = dst
-        if key not in gains:
+        st = stats[key]
+        if st.integrated == float("-inf"):
             log(f"  スキップ(無音): {src.name}")
             continue
+
+        gain = target_lufs - st.integrated
+        record[f"{block}_{group}"] = {
+            "source": src.name, "window": windows[key],
+            "before": st.to_json(), "gain_db": round(gain, 2),
+        }
+
         if dst.exists() and not force:
             log(f"  スキップ(既存): {dst.name}")
             continue
 
-        gain = gains[key]
-        peak = peaks[key]
         run(
             [
                 FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y",
@@ -162,20 +150,21 @@ def run_normalize(
                 "-c:a", "pcm_f32le", "-rf64", "auto",
                 str(dst),
             ],
-            desc=(
-                f"  {src.name} -> {dst.name}  基準={windows[key]}  "
-                f"自ブロックのピーク {peak:+.2f} dBFS, 適用ゲイン {gain:+.2f} dB"
-            ),
+            desc=(f"  {src.name} -> {dst.name}  "
+                  f"{st.integrated:+.1f} LUFS -> {target_lufs:+.1f} LUFS "
+                  f"(ゲイン {gain:+.2f} dB)"),
         )
 
-        # 適用範囲は全体なので、除外した guard 部分が 0 dBFS を超えることがありうる。
-        # 32bit float なのでファイル上は壊れないが、後段の書き出しで問題になるため知らせる。
+        # ここではまだリミッターを通していないので 0 dBFS 超がありうる。
+        # 32bit float なので値は壊れないが、mix でコンプ・リミッターを通すまでは
+        # そのまま書き出してはいけない。
         full_peak = measure_peak_db(dst)
+        record[f"{block}_{group}"]["peak_after_gain_db"] = round(full_peak, 2)
         if full_peak > 0.0:
-            log(
-                f"    注意: {dst.name} の全体ピークは {full_peak:+.2f} dBFS です"
-                "(基準から除外した音出し/休憩部分が本編より大きいため)。"
-                "32bit float なので値は保持されますが、最終書き出し時は要確認。"
-            )
+            log(f"    {dst.name} のピークは {full_peak:+.2f} dBFS です"
+                "(mix のリミッターで -1 dBTP に収めます)")
 
+    write_json(outdir / "loudness.json",
+               {"target_lufs": target_lufs, "ref_margin_s": ref_margin, "blocks": record})
+    log(f"測定結果を保存しました: {(outdir / 'loudness.json').name}")
     return out

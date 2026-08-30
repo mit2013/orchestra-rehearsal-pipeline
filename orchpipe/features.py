@@ -290,7 +290,12 @@ def _tuning_frames(ff: FrameFeatures, tonal_th: float = 0.32) -> np.ndarray:
 
 
 def tuning_frames(ff: FrameFeatures, tonal_th: float = 0.32) -> np.ndarray:
-    """`_tuning_frames` の公開版(区間検出側から利用する)。"""
+    """`_tuning_frames` の公開版。
+
+    境界のスナップ用途では `tuning.detect_tuning_events` に置き換えられており、
+    こちらは `WindowFeatures.tuning_score` を作るためだけに残っている
+    (この列はスコア合成の重みには入っていない参考値である)。
+    """
     return _tuning_frames(ff, tonal_th)
 
 
