@@ -351,6 +351,12 @@ def cmd_digest2(args) -> None:
         dst = rdir / f"{key}_digest2.wav"
         log(f"  {key}: playing {len([s for s in spans if s.label=='playing'])} 区間 "
             f"-> マージン統合後 {len(ranges)} 範囲")
+        # チューニングの除外は最後に当てる。分類の結果を問わず範囲から落とす。
+        if args.head_skip >= 0:
+            until, why = digest_mod.head_tuning_end(p, fallback_s=args.head_skip)
+            before = len(ranges)
+            ranges = digest_mod.drop_head(ranges, until)
+            log(f"    冒頭を除外: {why} -> 範囲 {before} から {len(ranges)}")
         info = digest_mod.build_digest(p, ranges, dst, crossfade=args.crossfade)
         kept = info["kept_seconds"] - info.get("crossfade_loss", 0.0)
         rows.append({"block": key, "original_sec": round(total, 1),
@@ -534,6 +540,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_states2)
     sp = digest_opts(common(sub.add_parser("digest2", help="ステージG-3: 新分類でのダイジェスト")))
     sp.add_argument("--block", default="合奏2", help="ブロック名の一部で対象を限定")
+    sp.add_argument("--head-skip", type=float, default=digest_mod.HEAD_SKIP_S,
+                    help="冒頭のチューニングを検出できなかったときに落とす長さ[秒]。"
+                         "負の値で冒頭除外そのものを無効にする")
     sp.add_argument("--lead", type=float, default=digest_mod.LEAD_S,
                     help="予備拍リードタイム[秒]。演奏開始の手前を常にこれだけ残す")
     sp.add_argument("--tail", type=float, default=digest_mod.TAIL_S,
