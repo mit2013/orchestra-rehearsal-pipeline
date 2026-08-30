@@ -303,6 +303,52 @@ MP3 は `libmp3lame` 320kbps 固定で、ID3タグを `mutagen` で書き込む:
 `export` は再エンコードをスキップした場合でもタグは毎回書き直す。団体名を変えたときは
 `export` を再実行するだけでよく、MP3 の再エンコードは走らない。
 
+## 現場前処理(帰宅前に MP3 を配る)
+
+素材は3時間で約 8GB(32bit float)あり、モバイル回線では送れない。そこで **iPhone
+上で 320kbps MP3 を1本だけ作り(「プロキシ」)、それだけを母艦へ送る**。母艦は
+届いた MP3 で境界提案からブロック切り出し、Box への配布までを済ませる。Drive 用の
+WAV は帰宅後に原本から作る。
+
+```bash
+# 母艦: 現場で流すスクリプトを用意しておく(その日の TAKE 名を埋め込む)
+.venv/bin/python pipeline.py field-script --date 260829
+
+# 現場: M4 を File Transfer モードにして iPhone に接続(M4 は電池駆動)
+#       microSD の TAKE を iPhone にコピーし、a-Shell で
+#       sh field_master.sh   -> 260829_proxy.mp3(3時間で約 413MiB)
+
+# 母艦: 届いたプロキシを取り込む
+.venv/bin/python pipeline.py field-receive --date 260829 --input ~/Downloads/260829_proxy.mp3
+.venv/bin/python pipeline.py propose  --date 260829 --splits 3
+# ここで境界を確認して confirmed.json を確定させる
+.venv/bin/python pipeline.py field-export --date 260829
+.venv/bin/python pipeline.py box-upload   --date 260829
+.venv/bin/python pipeline.py notify       --date 260829
+```
+
+プロキシに載せるのは**クリップを避けるための固定ゲイン(-14 dB)だけ**である。
+ラウドネス正規化・コンプ・リミッターは、境界が決まったあとに母艦がブロックごとに
+当てる(`field-export`)。境界が決まる前に単一ゲインを確定させると、ブロック間の
+音量差(260829 で 9.7 dB)がそのまま残ってしまうためである。固定ゲインは可逆なので、
+母艦は測定の前に +14 dB を戻す。
+
+260829 で原本経由と比べた結果:
+
+| | 結果 |
+|---|---|
+| ブロックごとのゲイン | **0.01 dB まで一致**(+4.00 / -5.70 / -2.50 dB) |
+| 配布 MP3 のラウドネス | 統合・レンジ・トゥルーピークとも一致 |
+| 境界提案 | **5区間すべて同一時刻**。チューニング検出も一致 |
+| 無音閾値 | -42.985 → -56.984 dBFS(固定ゲイン -14 dB ぶんちょうど) |
+| 音の差 | 位置ずれ 0.00 ms / 相関 0.9998 以上 / 残差は最悪 -34.6 dB(打楽器) |
+
+代償は MP3 の符号化が1世代増えることで、`-c copy` では切り出せない。詳細と検証は
+`orchestra_recording_pipeline_field_preprocess.md` を参照。
+
+`field-proxy` は母艦側で同じプロキシを作る(検証用、および iPhone が使えないときの
+代替)。`apply` にプロキシを渡すとエラーで止まる ― ブロック WAV は原本から切るため。
+
 ## クラウドアップロード
 
 用途が違うので、Box と Google Drive で共有の性格を変えている。
@@ -436,6 +482,12 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `mix` | `--comp-attack` | 100 ms | コンプのアタック |
 | `mix` | `--comp-release` | 1000 ms | コンプのリリース |
 | `mix` | `--comp-knee` | 6 dB | コンプのニー幅 |
+| `field-script` | `--takes` | 2 | その日の TAKE 数(`ingest.json` があればそちらが優先) |
+| `field-script` / `field-proxy` / `field-export` | `--gain` | -14 dB | プロキシに載せる固定ゲイン |
+| `field-receive` | `--input` | 必須 | 受け取ったプロキシ MP3 |
+| `field-receive` | `--move` | — | コピーではなく移動する |
+| `field-export` | `--variant` | なし | 版名。`export` と同じ |
+| `field-export` | `--target-lufs` / `--true-peak` / `--ref-margin` | mix と同じ | マスタリングの設定 |
 | `box-upload` | `--auth-timeout` | 300 秒 | 初回認証でブラウザ操作を待つ秒数 |
 | `gdrive-upload` | `--auth-timeout` | 無制限 | 同上 |
 | `notify` | `--no-line` | — | LINE への push を行わない |
