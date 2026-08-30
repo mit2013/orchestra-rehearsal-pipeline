@@ -31,6 +31,7 @@ from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
 from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
+from orchpipe import field as field_mod
 from orchpipe import gdrive_upload as gdrive_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
@@ -89,7 +90,23 @@ def _load_takes(root: Path, date: str, outdir: Path) -> list[ingest_mod.Take]:
 
 
 def _merged_paths(outdir: Path, groups) -> dict[str, Path]:
-    return {g: merge_mod.merged_path(outdir, g) for g in groups}
+    """解析対象になる結合済みファイル。
+
+    現場経路では原本を結合した WAV が母艦に無く、iPhone が作った 320kbps の
+    プロキシ 1 本しか届いていない。WAV が無くプロキシがあればそちらを使う
+    (`propose` は ffmpeg でデコードして特徴量を取るだけなので、入力が MP3 でも
+    そのまま動く)。
+    """
+    out: dict[str, Path] = {}
+    for g in groups:
+        wav = merge_mod.merged_path(outdir, g)
+        if not wav.exists():
+            proxy = field_mod.proxy_path(outdir, g)
+            if proxy.exists():
+                out[g] = proxy
+                continue
+        out[g] = wav
+    return out
 
 
 def _require_merged(outdir: Path, groups) -> dict[str, Path]:
@@ -200,6 +217,12 @@ def cmd_apply(args) -> None:
     takes = _load_takes(args.root, args.date, outdir)
     total = sum(t.duration for t in takes)
     sources = _require_merged(outdir, groups)
+    proxies = [p.name for p in sources.values() if p.suffix.lower() == ".mp3"]
+    if proxies:
+        raise PipelineError(
+            f"{', '.join(proxies)} は現場プロキシ(MP3)です。`apply` は原本の WAV を"
+            "切り出す段なので使えません。現場経路では `field-export` を使ってください"
+        )
     want = _check_groups(args.groups, groups)
     if want:
         sources = {g: p for g, p in sources.items() if g in want}
@@ -254,6 +277,88 @@ def cmd_export(args) -> None:
     for t in tracks:
         print(f"  {t.number}. {t.title:<6} {t.wav.name}  /  {t.mp3.name}")
     print(f"\n  出力先: {outdir / 'export'}")
+
+
+def cmd_field_script(args) -> None:
+    """現場(iPhone / a-Shell)で流すスクリプトを書き出す。"""
+    outdir = out_dir(args.root, args.date)
+    outdir.mkdir(parents=True, exist_ok=True)
+    cfg = config_mod.load(outdir) if (outdir / "session_config.json").exists() else config_mod.SessionConfig()
+    profile = get_profile(args.recorder or DEFAULT_PROFILE)
+    tracks = list(profile.channel_groups[args.group])
+    manifest = outdir / "ingest.json"
+    if manifest.exists():
+        # 実際の TAKE 名を使う。iPhone にコピーしたときのフォルダ構成をそのまま想定する。
+        loaded = _load_takes(args.root, args.date, outdir)
+        takes = len(loaded)
+        files = [f"{Path(t.files[tr]).parent.name}/{Path(t.files[tr]).name}"
+                 for t in loaded for tr in tracks]
+    else:
+        takes = args.takes
+        files = [f"{args.date}_{i:03d}.TAKE/{args.date}_{i:03d}_{t}.WAV"
+                 for i in range(1, takes + 1) for t in tracks]
+    text = field_mod.field_script(
+        args.date, files, takes, len(tracks),
+        out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
+        gain_db=args.gain, bitrate=args.bitrate, name=args.name,
+    )
+    dst = outdir / args.name
+    dst.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"  保存先: {dst}")
+
+
+def cmd_field_proxy(args) -> None:
+    """母艦側でプロキシを作る(検証用、および iPhone が使えないときの代替)。"""
+    outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
+    cfg = config_mod.load(outdir)
+    takes = _load_takes(args.root, args.date, outdir)
+    tracks = list(groups[args.group])
+    inputs = [t.files[tr] for t in takes for tr in tracks]
+    lr_map = cfg.ext_lr_map if len(tracks) == 2 else "normal"
+    dst = Path(args.output) if args.output else field_mod.proxy_path(outdir, args.group)
+    if dst.exists() and not args.force:
+        raise PipelineError(f"{dst.name} が既にあります(作り直すには --force)")
+    info = field_mod.build_proxy(inputs, len(takes), len(tracks), dst,
+                                 lr_map=lr_map, gain_db=args.gain, bitrate=args.bitrate)
+    print()
+    print(f"=== 現場プロキシ ({args.date}) ===")
+    print(f"  {dst}")
+    print(f"  {info['size_mb']:.0f} MiB / ゲイン {info['gain_db']:+.1f} dB / {info['bitrate']}")
+    print(f"  符号化直前のピーク: {info['pre_encode_peak_db']:+.2f} dBFS")
+
+
+def cmd_field_receive(args) -> None:
+    """届いたプロキシを output/{date}/ に置き、下流が動く ingest.json を書く。"""
+    outdir = out_dir(args.root, args.date)
+    field_mod.receive_proxy(Path(args.input), outdir, args.date,
+                            group=args.group, move=args.move)
+    config_mod.ensure(outdir, args.root)
+
+
+def cmd_field_export(args) -> None:
+    """プロキシ 1 本から確定境界でブロックを切り出し、配布用 MP3 にする。"""
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    proxy = Path(args.input) if args.input else field_mod.proxy_path(outdir, args.group)
+    if not proxy.exists():
+        raise PipelineError(f"{proxy} がありません。先に `field-receive` を実行してください。")
+    confirmed = Path(args.confirmed) if args.confirmed else outdir / "confirmed.json"
+    rows = field_mod.run_field_export(
+        proxy, confirmed, outdir, cfg, args.date,
+        variant=args.variant, proxy_gain_db=args.gain,
+        target_lufs=args.target_lufs, true_peak_db=args.true_peak,
+        ref_margin=args.ref_margin, bitrate=args.bitrate, force=args.force,
+    )
+    write_json(outdir / "field_export.json", {"proxy": str(proxy), "blocks": rows})
+    print()
+    print(f"=== 現場経路の書き出し ({args.date}) ===")
+    for r in rows:
+        a = r["after"]
+        print(f"  {Path(r['path']).name}  {a['integrated_lufs']:+.1f} LUFS / "
+              f"レンジ {a['lra_lu']:.1f} LU / TP {a['true_peak_db']:+.1f} dBFS / "
+              f"{r['size_mb']:.0f} MiB")
 
 
 def cmd_box_upload(args) -> None:
@@ -420,6 +525,42 @@ def build_parser() -> argparse.ArgumentParser:
                     help="版名。ファイル名末尾とID3タイトルに入る(例 ラウドネス調整版)。"
                          "既配布分を差し替えず別版として並べたいときに使う")
     sp.set_defaults(func=cmd_export)
+
+    sp = with_recorder(common(sub.add_parser(
+        "field-script", help="現場(iPhone/a-Shell)で流すプロキシ作成スクリプトを出す")))
+    sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
+    sp.add_argument("--takes", type=int, default=2, help="その日の TAKE 数")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
+                    help="符号化前に当てる固定ゲイン [dB]")
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.add_argument("--name", default="field_master.sh")
+    sp.set_defaults(func=cmd_field_script)
+
+    sp = common(sub.add_parser("field-proxy", help="母艦側でプロキシを作る(検証・代替用)"))
+    sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
+    sp.add_argument("--output", default=None, help="出力先 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB)
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.set_defaults(func=cmd_field_proxy)
+
+    sp = common(sub.add_parser("field-receive", help="届いたプロキシを取り込み ingest.json を書く"))
+    sp.add_argument("--input", required=True, help="受け取ったプロキシ MP3")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--move", action="store_true", help="コピーではなく移動する")
+    sp.set_defaults(func=cmd_field_receive)
+
+    sp = common(sub.add_parser("field-export", help="プロキシから配布用 MP3 を切り出す"))
+    sp.add_argument("--input", default=None, help="プロキシ MP3 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
+    sp.add_argument("--confirmed", default=None, help="確定JSON (既定: output/{date}/confirmed.json)")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--variant", default="", help="版名。ファイル名末尾とID3タイトルに入る")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
+                    help="プロキシに当てた固定ゲイン [dB]。測定前に打ち消す")
+    sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
+    sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
+    sp.add_argument("--ref-margin", type=float, default=120.0)
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.set_defaults(func=cmd_field_export)
 
     sp = common(sub.add_parser("box-upload", help="MP3 を Box にアップロードし共有リンクを発行"))
     sp.add_argument("--auth-timeout", type=float, default=300.0,
