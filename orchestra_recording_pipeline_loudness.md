@@ -8,7 +8,9 @@
 
 ## 1. ブランチ
 
-`main` から `feature/loudness-normalize` を作成する。
+`main` から `feature/audio-quality` を作成する。**チューニング検出の修正
+(`orchestra_recording_pipeline_tuning_detection_fix.md`)と同じブランチで進める。**
+理由はそちらの §1 を参照。
 
 ## 2. 現状の実測(260829、配布したファイル)
 

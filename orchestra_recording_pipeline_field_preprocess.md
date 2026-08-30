@@ -15,7 +15,10 @@
 
 ## 1. ブランチ
 
-`main` から `feature/field-preprocess` を作成する。
+`main` から `feature/field-preprocess` を作成する。**`feature/audio-quality` が main に
+マージされ、ラウドネス・コンプ・リミッターの設定値が確定してから切ること。**
+iPhone 側と母艦側で設定が食い違うと、帰宅前に配った MP3 と帰宅後に作る WAV で
+音が変わる。
 
 ## 2. 前提として確認済みの事実
 

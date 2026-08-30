@@ -11,7 +11,11 @@
 
 ## 1. ブランチ
 
-`main` から `feature/tuning-detection-fix` を作成する。
+`main` から `feature/audio-quality` を作成する。**ラウドネス正規化
+(`orchestra_recording_pipeline_loudness.md`)と同じブランチで進める。** 触るファイルが
+重ならず(こちらは `tuning.py` と `segment.py`、あちらは `normalize.py` と `mix.py`)、
+どちらも配布する音そのものを変えるため、まとめれば音源の再生成と試聴が1回で済む。
+合否の見方は別物なので、まとめても切り分けられる。
 
 ## 2. 何が起きているか
 
