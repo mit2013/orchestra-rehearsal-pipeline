@@ -454,6 +454,72 @@ def _label_segments(
     return out
 
 
+# チューニングを起点に組むとき、これより短い間隔のチューニングは同じ合奏の
+# 一部とみなして落とす。
+TUNING_MIN_SPACING_S = 600.0
+
+
+def _last_above(score: np.ndarray, wf: WindowFeatures, thr: float,
+                lo: float, hi: float) -> float | None:
+    """[lo, hi) に**まるごと収まる**窓のうち、スコアが閾値を超える最後の窓の終わり[秒]。
+
+    窓の終わりまで `hi` に収める必要がある。20 秒窓は次のチューニングにまたがると
+    そのチューニングの高いスコアを拾ってしまい、休憩をまたいで合奏が続いていることに
+    なる(260829 合奏1 の終わりが 00:42:40 ではなく 00:47:11 になった)。
+    """
+    idx = [i for i, t in enumerate(wf.times)
+           if lo <= float(t) and float(t) + wf.win_s <= hi and score[i] >= thr]
+    if not idx:
+        return None
+    return min(hi, float(wf.times[idx[-1]]) + wf.win_s)
+
+
+def _segments_from_tuning(
+    events: list[TuningEvent],
+    score: np.ndarray,
+    wf: WindowFeatures,
+    thr: float,
+    total: float,
+    pre_roll_s: float,
+    min_spacing_s: float = TUNING_MIN_SPACING_S,
+) -> tuple[list[tuple[float, float, bool]], set[int]] | None:
+    """チューニングを合奏の開始とみなして区間を組む。
+
+    スコアからの粗い区切りは、休憩の話し声や長い部分練習で簡単に崩れる
+    (260829 では合奏1と合奏2をまたいで 94.6 分をひと続きの合奏と判定した)。
+    一方チューニングは **合奏の直前に必ず現れ、合奏の中には現れない**。検出が
+    その日のブロック数と一致するなら、そちらを起点にしたほうが確実である。
+
+    開始はチューニング開始の `pre_roll_s` 秒前。終了は「次のチューニングの手前で、
+    合奏らしさが最後に閾値を超えた窓の終わり」とする。
+    """
+    if not events:
+        return None
+    starts: list[float] = []
+    for ev in sorted(events, key=lambda e: e.start):
+        s = max(0.0, ev.start - pre_roll_s)
+        if starts and s - starts[-1] < min_spacing_s:
+            continue
+        starts.append(s)
+
+    segs: list[tuple[float, float, bool]] = []
+    snapped: set[int] = set()
+    cursor = 0.0
+    for i, s in enumerate(starts):
+        limit = starts[i + 1] if i + 1 < len(starts) else total
+        end = _last_above(score, wf, thr, s, limit)
+        if end is None or end <= s:
+            return None
+        if s > cursor:
+            segs.append((cursor, s, False))
+        snapped.add(len(segs))
+        segs.append((s, end, True))
+        cursor = end
+    if cursor < total:
+        segs.append((cursor, total, False))
+    return segs, snapped
+
+
 # ---------------------------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------------------------
@@ -469,8 +535,14 @@ def propose_segments(
     default_penalty: float = 12.0,
     guard_s: float = 120.0,
     pre_roll_s: float = TUNING_PRE_ROLL_S,
+    tuning_first: bool = False,
 ) -> tuple[list[Segment], dict]:
-    """境界候補を提案する。戻り値は (区間リスト, 解析メタ情報)。"""
+    """境界候補を提案する。戻り値は (区間リスト, 解析メタ情報)。
+
+    `tuning_first` を立てると、スコアからの粗い区切りではなく**チューニングを
+    合奏の開始**として区間を組む(`_segments_from_tuning`)。検出されたチューニングの
+    数が `splits` と食い違う場合は従来の経路に落とす。
+    """
     score = ensemble_score(wf, smooth_s=smooth_s)
     thr = decision_threshold(score)
     spread = float(np.percentile(score, 90) - np.percentile(score, 10)) or 1.0
@@ -498,13 +570,29 @@ def propose_segments(
         ", ".join(f"{fmt_time(e.start)}(純度{e.purity:.2f}/{e.duration:.0f}s)"
                   for e in events[:12]) + (" ..." if len(events) > 12 else ""))
 
+    mode = "score"
+    snapped_from_tuning: set[int] = set()
+    if tuning_first:
+        built = _segments_from_tuning(events, score, wf, thr, total_duration, pre_roll_s)
+        n_keep = 0 if built is None else sum(1 for x in built[0] if x[2])
+        if built is None:
+            log("  チューニング起点: 組めませんでした。スコアからの区切りを使います")
+        elif splits and n_keep != splits:
+            log(f"  チューニング起点: 合奏 {n_keep} 区間で --splits {splits} と合いません。"
+                "スコアからの区切りを使います")
+        else:
+            segs, snapped_from_tuning = built
+            mode = "tuning"
+            log(f"  チューニング起点で組みました: 合奏 {n_keep} 区間 — " +
+                ", ".join(f"{fmt_time(a)}-{fmt_time(b)}" for a, b, v in segs if v))
+
     # 合奏の開始境界のみ、チューニング開始の手前に合わせる(終了側は手がかりが弱い)。
     # 終端ではなく開始を基準にするのは、チューニング自体も練習の一部として残す
     # ためと、guard のような粗い固定値に頼らず日付・ブロックによらない一貫した
     # 基準にするため。
-    snapped: set[int] = set()
+    snapped: set[int] = set(snapped_from_tuning) if mode == "tuning" else set()
     used: set[int] = set()
-    for i in range(1, len(segs)):
+    for i in range(1, len(segs) if mode == "score" else 0):
         if not segs[i][2]:
             continue
         picked = _select_tuning(segs[i][0], events, used)
@@ -531,6 +619,7 @@ def propose_segments(
         "smooth_s": smooth_s,
         "guard_s": guard_s,
         "tuning_pre_roll_s": pre_roll_s,
+        "boundary_mode": mode,
         "silence_db": wf.silence_db,
         "win_s": wf.win_s,
         "hop_s": wf.hop_s,
@@ -539,7 +628,8 @@ def propose_segments(
             {**e.to_json(), "start": fmt_time(e.start), "end": fmt_time(e.end)}
             for e in events
         ],
-        "snapped_boundaries": sorted(fmt_time(segs[i][0]) for i in snapped),
+        "snapped_boundaries": sorted(fmt_time(segs[i][0]) for i in snapped
+                                     if i < len(segs)),
     }
     return result, meta
 

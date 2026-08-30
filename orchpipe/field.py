@@ -397,3 +397,58 @@ def field_script(
         filt=proxy_filter(n_takes, n_tracks, lr_map, gain_db),
         bitrate=bitrate, gain=gain_db,
     )
+
+
+# --- 届くのを待つ ------------------------------------------------------------
+# 転送方式は iCloud Drive でも scp でも「所定のフォルダにファイルが現れる」点は
+# 同じなので、フォルダを見張る形にしておけばどちらでも乗る。方式が決まるまでの
+# あいだも、これだけで現場経路は通る。
+WATCH_POLL_S = 5.0
+WATCH_STABLE_S = 15.0
+
+
+def wait_for_proxy(
+    watch_dir: Path,
+    pattern: str = "*.mp3",
+    since: float | None = None,
+    poll_s: float = WATCH_POLL_S,
+    stable_s: float = WATCH_STABLE_S,
+    timeout_s: float | None = None,
+) -> Path:
+    """`watch_dir` に現れるプロキシを待つ。書き込み完了まで待ってから返す。
+
+    転送中のファイルを掴まないよう、**サイズが `stable_s` 秒変わらないこと**を
+    確認してから返す。`since` より新しいものだけを対象にする(既定は呼び出し時刻)。
+    """
+    import time
+
+    if not watch_dir.is_dir():
+        raise PipelineError(f"{watch_dir} がありません")
+    started = time.time()
+    since = started if since is None else since
+    log(f"{watch_dir} を見張ります(pattern={pattern} / {poll_s:.0f} 秒ごと / "
+        f"{stable_s:.0f} 秒サイズが変わらなければ受け取り)")
+
+    seen: dict[Path, tuple[int, float]] = {}
+    while True:
+        for p in sorted(watch_dir.glob(pattern)):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            if st.st_mtime < since:
+                continue
+            prev = seen.get(p)
+            if prev is None:
+                log(f"  見つけました: {p.name}  {st.st_size / 2**20:.0f} MiB(書き込み完了を待ちます)")
+                seen[p] = (st.st_size, time.time())
+            elif st.st_size != prev[0]:
+                seen[p] = (st.st_size, time.time())
+            elif time.time() - prev[1] >= stable_s:
+                log(f"  受け取り: {p.name}  {st.st_size / 2**20:.0f} MiB")
+                return p
+        if timeout_s is not None and time.time() - started > timeout_s:
+            raise PipelineError(
+                f"{timeout_s:.0f} 秒待ちましたが {watch_dir} に {pattern} が現れませんでした"
+            )
+        time.sleep(poll_s)

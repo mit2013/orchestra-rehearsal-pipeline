@@ -175,6 +175,7 @@ def cmd_propose(args) -> None:
         smooth_s=args.smooth,
         default_penalty=args.penalty,
         guard_s=args.guard,
+        tuning_first=args.tuning_first,
     )
 
     print()
@@ -435,6 +436,34 @@ def cmd_review_apply(args) -> None:
               f"{fmt_time(before)} -> {fmt_time(after)}  ({shift:+.0f} 秒)")
 
 
+def cmd_field_watch(args) -> None:
+    """所定のフォルダにプロキシが届くのを待ち、境界レビューの手前まで進める。"""
+    outdir = out_dir(args.root, args.date)
+    src = field_mod.wait_for_proxy(
+        Path(args.dir), pattern=args.pattern, poll_s=args.poll,
+        stable_s=args.stable, timeout_s=args.timeout,
+    )
+    field_mod.receive_proxy(src, outdir, args.date, group=args.group, move=args.move)
+    config_mod.ensure(outdir, args.root)
+    if args.receive_only:
+        print(f"\n受け取りました: {field_mod.proxy_path(outdir, args.group)}")
+        return
+
+    # 以降は既存のサブコマンドと同じ処理を、同じ引数の既定値で呼ぶ。
+    sub = build_parser()
+    prop = sub.parse_args(["propose", "--date", args.date, "--root", str(args.root),
+                           "--source", args.group, "--no-previews"]
+                          + (["--splits", str(args.splits)] if args.splits else []))
+    cmd_propose(prop)
+    rev = sub.parse_args(["review-page", "--date", args.date, "--root", str(args.root),
+                          "--group", args.group])
+    cmd_review_page(rev)
+    print()
+    print("次: review_page.html を Artifact として公開し、iPhone で境界を確定する")
+    print(f"    そのあと  pipeline.py review-apply --date {args.date} --input <保存されたJSON>")
+    print(f"    続けて    pipeline.py field-export --date {args.date}")
+
+
 def cmd_field_export(args) -> None:
     """プロキシ 1 本から確定境界でブロックを切り出し、配布用 MP3 にする。"""
     outdir = out_dir(args.root, args.date)
@@ -584,6 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0, help="keep区間を外側へ広げる安全マージン [秒]")
     sp.add_argument("--penalty", type=float, default=12.0, help="--splits 未指定時の区間切り替えペナルティ")
     sp.add_argument("--no-previews", action="store_true", help="プレビュー音声と波形画像を作らない")
+    sp.add_argument("--tuning-first", action="store_true",
+                    help="スコアからの区切りではなく、チューニングを合奏の開始として区間を組む")
     sp.set_defaults(func=cmd_propose)
 
     sp = common(sub.add_parser("apply", help="確定JSONにもとづきトリミング"))
@@ -663,6 +694,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--move", action="store_true", help="コピーではなく移動する")
     sp.set_defaults(func=cmd_field_receive)
 
+    sp = common(sub.add_parser("field-watch", help="プロキシが届くのを待ち、境界レビューの手前まで進める"))
+    sp.add_argument("--dir", required=True, help="見張るフォルダ(iCloud Drive でも scp の置き場でもよい)")
+    sp.add_argument("--pattern", default="*.mp3")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--splits", type=int, default=None, help="propose に渡す分割数のヒント")
+    sp.add_argument("--poll", type=float, default=field_mod.WATCH_POLL_S)
+    sp.add_argument("--stable", type=float, default=field_mod.WATCH_STABLE_S,
+                    help="サイズがこの秒数変わらなければ書き込み完了とみなす")
+    sp.add_argument("--timeout", type=float, default=None, help="待つ上限 [秒]")
+    sp.add_argument("--move", action="store_true")
+    sp.add_argument("--receive-only", action="store_true",
+                    help="受け取るだけで propose / review-page は走らせない")
+    sp.set_defaults(func=cmd_field_watch)
+
     sp = common(sub.add_parser("field-export", help="プロキシから配布用 MP3 を切り出す"))
     sp.add_argument("--input", default=None, help="プロキシ MP3 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
     sp.add_argument("--confirmed", default=None, help="確定JSON (既定: output/{date}/confirmed.json)")
@@ -702,6 +747,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0)
     sp.add_argument("--penalty", type=float, default=12.0)
     sp.add_argument("--no-previews", action="store_true")
+    sp.add_argument("--tuning-first", action="store_true")
     sp.set_defaults(func=cmd_all)
 
     return p

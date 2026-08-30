@@ -38,11 +38,16 @@ from pathlib import Path
 
 from .util import FFMPEG, PipelineError, fmt_time, log, parse_time, run
 
-# 境界の前後に含める長さ。ボタンで ±10 秒動かしてもクリップに収まるようにしてある。
-PRE_S = 25.0
-POST_S = 25.0
-CLIP_BITRATE = "128k"
-NUDGES = (-10, -5, -2, 2, 5, 10)
+# 境界の前後に含める長さ。いちばん大きいボタン(±30秒)で動かしてもクリップの中に
+# 収まるようにしてある。`--tuning-first` の提案は開始がぴたりと合う一方、終了は
+# guard のぶん最大2分ほど後ろに出るので、粗い刻みも要る。
+PRE_S = 45.0
+POST_S = 45.0
+# 境界が切れているかを判断するだけなので、モノラルの 96kbps で足りる。
+# 6本を data URI で埋め込むため、上限 16MiB に対する余裕を優先する。
+CLIP_BITRATE = "96k"
+CLIP_CHANNELS = 1
+NUDGES = (-30, -15, -5, 5, 15, 30)
 
 
 @dataclass
@@ -55,7 +60,7 @@ class Edge:
 
 
 def _cut(src: Path, at: float, dst: Path, pre: float, post: float,
-         bitrate: str, force: bool) -> float:
+         bitrate: str, force: bool, channels: int = CLIP_CHANNELS) -> float:
     """境界 `at` の前後を切り出す。戻り値はクリップ内での境界位置[秒]。"""
     start = max(0.0, at - pre)
     offset = at - start
@@ -65,6 +70,7 @@ def _cut(src: Path, at: float, dst: Path, pre: float, post: float,
     run(
         [FFMPEG, "-hide_banner", "-v", "error", "-y",
          "-ss", f"{start:.3f}", "-t", f"{offset + post:.3f}", "-i", str(src),
+         "-ac", str(channels),
          "-c:a", "libmp3lame", "-b:a", bitrate, "-map_metadata", "-1", str(dst)],
         desc=f"    {dst.name}",
     )
