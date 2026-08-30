@@ -37,6 +37,7 @@ from orchpipe import ingest as ingest_mod
 from orchpipe import merge as merge_mod
 from orchpipe import mix as mix_mod
 from orchpipe import notify as notify_mod
+from orchpipe import loudness as loud_mod
 from orchpipe import normalize as norm_mod
 from orchpipe import preview as preview_mod
 from orchpipe import segment as seg_mod
@@ -212,12 +213,10 @@ def cmd_apply(args) -> None:
 def cmd_normalize(args) -> None:
     outdir = out_dir(args.root, args.date)
     recorder, groups = _session_info(args.root, args.date, outdir)
-    cfg = config_mod.load(outdir)
     norm_mod.run_normalize(
         outdir, list(groups),
-        target_db=args.target,
+        target_lufs=args.target_lufs,
         ref_margin=args.ref_margin,
-        scope=cfg.normalize_scope,
         force=args.force,
     )
 
@@ -228,7 +227,16 @@ def cmd_mix(args) -> None:
     cfg = config_mod.load(outdir)
     log(f"session_config: source={cfg.source}, mix_ratio={cfg.mix_ratio}, ext_lr_map={cfg.ext_lr_map}")
     written = mix_mod.run_mix(
-        outdir, cfg, list(groups), safe_peak_db=args.safe_peak, force=args.force
+        outdir, cfg, list(groups),
+        target_lufs=args.target_lufs,
+        true_peak_db=args.true_peak,
+        ref_margin=args.ref_margin,
+        comp_ratio=args.comp_ratio,
+        comp_threshold_offset=args.comp_threshold_offset,
+        comp_attack_ms=args.comp_attack,
+        comp_release_ms=args.comp_release,
+        comp_knee_db=args.comp_knee,
+        force=args.force,
     )
     print()
     print(f"=== 最終ファイル ({args.date}) ===")
@@ -379,15 +387,31 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--groups", default=None, help="対象系統をカンマ区切りで限定 (例: ext)")
     sp.set_defaults(func=cmd_apply)
 
-    sp = common(sub.add_parser("normalize", help="trimmed/ の各ブロックをピーク正規化"))
-    sp.add_argument("--target", type=float, default=norm_mod.TARGET_DB, help="目標ピーク [dBFS]")
+    sp = common(sub.add_parser("normalize", help="trimmed/ の各ブロックをラウドネス正規化"))
+    sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS,
+                    help="目標の統合ラウドネス [LUFS]")
     sp.add_argument("--ref-margin", type=float, default=120.0,
-                    help="基準ピークの算出から除外する前後の長さ [秒] (guard 相当)")
+                    help="基準ラウドネスの算出から除外する前後の長さ [秒] (guard 相当)")
     sp.set_defaults(func=cmd_normalize)
 
     sp = common(sub.add_parser("mix", help="正規化済み ext/int から最終ファイルを作る"))
-    sp.add_argument("--safe-peak", type=float, default=mix_mod.SAFE_PEAK_DB,
-                    help="合成後に超えてはならないピーク [dBFS]")
+    sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS,
+                    help="目標の統合ラウドネス [LUFS]")
+    sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB,
+                    help="トゥルーピークの上限 [dBTP]")
+    sp.add_argument("--ref-margin", type=float, default=120.0,
+                    help="ラウドネス測定から除外する前後の長さ [秒] (guard 相当)")
+    sp.add_argument("--comp-ratio", type=float, default=loud_mod.DEFAULT_COMP_RATIO,
+                    help="コンプレッサのレシオ")
+    sp.add_argument("--comp-threshold-offset", type=float,
+                    default=loud_mod.DEFAULT_COMP_THRESHOLD_OFFSET,
+                    help="コンプのしきい値を目標ラウドネスから何 dB 上に置くか")
+    sp.add_argument("--comp-attack", type=float, default=loud_mod.DEFAULT_COMP_ATTACK_MS,
+                    help="コンプのアタック [ms]")
+    sp.add_argument("--comp-release", type=float, default=loud_mod.DEFAULT_COMP_RELEASE_MS,
+                    help="コンプのリリース [ms]")
+    sp.add_argument("--comp-knee", type=float, default=loud_mod.DEFAULT_COMP_KNEE_DB,
+                    help="コンプのニー幅 [dB]")
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
