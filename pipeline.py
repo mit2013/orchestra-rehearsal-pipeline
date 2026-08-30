@@ -247,7 +247,8 @@ def cmd_mix(args) -> None:
 def cmd_export(args) -> None:
     outdir = out_dir(args.root, args.date)
     cfg = config_mod.load(outdir)
-    tracks = export_mod.run_export(outdir, args.date, cfg, force=args.force)
+    tracks = export_mod.run_export(outdir, args.date, cfg, force=args.force,
+                                   variant=args.variant)
     print()
     print(f"=== エクスポート ({args.date}) ===")
     for t in tracks:
@@ -415,6 +416,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
+    sp.add_argument("--variant", default="",
+                    help="版名。ファイル名末尾とID3タイトルに入る(例 ラウドネス調整版)。"
+                         "既配布分を差し替えず別版として並べたいときに使う")
     sp.set_defaults(func=cmd_export)
 
     sp = common(sub.add_parser("box-upload", help="MP3 を Box にアップロードし共有リンクを発行"))

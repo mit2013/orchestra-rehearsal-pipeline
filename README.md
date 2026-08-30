@@ -89,6 +89,7 @@ output/260802/
   export/
     260802_前半.wav         # 配布用 WAV(_final.wav とビット同一)
     260802_前半.mp3         # 配布用 MP3(320kbps、ID3タグ付き)
+    260802_前半_ラウドネス調整版.mp3   # --variant を付けたときの別版
 ```
 
 `confirmed.json` と `session_config.json` だけが git 追跡対象。ほかは再生成できるので除外。
@@ -425,6 +426,7 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | コマンド | オプション | 既定 | 意味 |
 |---|---|---|---|
 | `merge` / `apply` | `--groups` | 全系統 | 対象系統を限定(例 `ext`) |
+| `export` | `--variant` | なし | 版名。ファイル名末尾と ID3 タイトルに入る(例 `ラウドネス調整版`) |
 | `normalize` | `--target-lufs` | -20 LUFS | 目標の統合ラウドネス |
 | `normalize` | `--ref-margin` | 120 秒 | 基準ラウドネスの算出から除外する前後の長さ |
 | `mix` | `--target-lufs` | -20 LUFS | 目標の統合ラウドネス |
