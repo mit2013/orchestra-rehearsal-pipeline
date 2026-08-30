@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import features as F
+from ..tuning import detect_tuning_events
 from ..util import FFMPEG, PipelineError, log, run
 from .states import StateSpan
 
@@ -118,6 +120,50 @@ def playing_ranges(spans: list[StateSpan], total: float,
         else:
             merged.append([a, b])
     return [(a, b) for a, b in merged if b - a >= MIN_KEEP_S]
+
+
+# --- ブロック冒頭のチューニングの除外 ---------------------------------------
+#
+# ダイジェストにチューニングは要らない。分類器の `tuning` クラスに頼ると
+# 取りこぼす(260829 では 合奏1 のチューニングがほぼ playing に分類され、
+# 約100秒がそのままダイジェストの冒頭に入っていた)。
+#
+# 一方で、境界を決める段階でチューニングの位置は既に正確に分かっている。
+# ブロックの開始はチューニング開始の 5 秒前に置いてあるからである
+# (`segment.TUNING_PRE_ROLL_S`)。そこで分類の結果によらず、
+# **ブロック先頭からチューニング終了まで**を範囲から落とす。
+HEAD_SKIP_S = 90.0        # チューニングを検出できなかったときに落とす長さ
+HEAD_SEARCH_S = 300.0     # ブロック先頭からこの範囲にあるものを冒頭のチューニングとみなす
+
+
+def head_tuning_end(src: Path, search_s: float = HEAD_SEARCH_S,
+                    fallback_s: float = HEAD_SKIP_S) -> tuple[float, str]:
+    """ブロック冒頭のチューニングが終わる時刻を返す。戻り値は (時刻, 説明)。
+
+    検出できなかった場合は安全側に倒して `fallback_s` を返す。
+    """
+    ff = F.extract_frame_features(src, progress_every=1e9)
+    wf = F.aggregate_windows(ff)
+    events = detect_tuning_events(ff, wf.silence_db)
+    head = [e for e in events if e.start <= search_s]
+    if not head:
+        return fallback_s, f"チューニングを検出できず、既定の {fallback_s:.0f} 秒を除外"
+    e = min(head, key=lambda x: x.start)
+    return e.end, (f"チューニング {e.start:.1f}-{e.end:.1f} 秒"
+                   f"(純度 {e.purity:.2f} / {e.duration:.0f}秒)を除外")
+
+
+def drop_head(ranges: list[tuple[float, float]], until: float,
+              min_keep: float = MIN_KEEP_S) -> list[tuple[float, float]]:
+    """`until` より前を範囲から落とす。またいでいる範囲は頭を詰める。"""
+    out: list[tuple[float, float]] = []
+    for a, b in ranges:
+        if b <= until:
+            continue
+        a = max(a, until)
+        if b - a >= min_keep:
+            out.append((a, b))
+    return out
 
 
 def build_digest(src: Path, ranges: list[tuple[float, float]], dst: Path,
