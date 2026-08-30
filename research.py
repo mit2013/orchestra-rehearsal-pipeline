@@ -299,10 +299,14 @@ def cmd_states2(args) -> None:
         log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
             f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
         spans, br = states2_mod.bridge_playing(
-            spans, max_s=args.bridge, max_silence_run_s=args.bridge_max_silence)
+            spans, max_s=args.bridge, max_silence_run_s=args.bridge_max_silence,
+            min_play_s=args.bridge_min_play, min_flank_s=args.bridge_min_flank)
         meta["bridge"] = br
+        log(f"  短い playing を断片として除去: {br['n_fragments_dropped']} 件 / "
+            f"{br['seconds_fragments_dropped']:.0f} 秒(下限 {br['bridge_min_play_s']:.0f} 秒)")
         log(f"  発言を含まない非 playing を文脈で橋渡し: {br['n_bridged']} 件 / "
-            f"{br['seconds_bridged']:.0f} 秒(上限 {br['bridge_max_s']:.0f} 秒)")
+            f"{br['seconds_bridged']:.0f} 秒(上限 {br['bridge_max_s']:.0f} 秒 / "
+            f"前後 {br['bridge_min_flank_s']:.0f} 秒以上)")
         spans, warm = states2_mod.mark_trailing_warmup(
             src, spans, meta["duration"],
             end_gap_s=args.warmup_gap, dyn_th=args.warmup_dyn)
@@ -531,6 +535,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bridge-max-silence", type=float,
                     default=states2_mod.BRIDGE_MAX_SILENCE_RUN_S,
                     help="隙間の中で無音がこれより長く続いていたら橋渡ししない[秒]")
+    sp.add_argument("--bridge-min-play", type=float, default=states2_mod.BRIDGE_MIN_PLAY_S,
+                    help="これより短い playing は断片とみなし、橋渡しの足場にしない[秒]")
+    sp.add_argument("--bridge-min-flank", type=float, default=states2_mod.BRIDGE_MIN_FLANK_S,
+                    help="橋渡しに必要な前後の演奏の長さ[秒]")
     sp.add_argument("--hyst-enter", type=float, default=states2_mod.HYST_ENTER_H,
                     help="調和性がこの値以上で演奏に入る")
     sp.add_argument("--hyst-stay", type=float, default=states2_mod.HYST_STAY_H,

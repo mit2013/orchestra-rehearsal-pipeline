@@ -114,6 +114,24 @@ BRIDGE_STOP_LABELS = ("speech", "tuning")
 # 途切れなく続くことはない。
 BRIDGE_MAX_SILENCE_RUN_S = 8.0
 
+# 橋渡しの前に落とす playing の断片、および橋渡しに必要な前後の演奏の長さ。
+#
+# 発言も長い無音も含まない隙間でも、部分練習の日には待ち時間を拾ってしまう。
+# 260802 合奏2 で橋渡しが足した箇所を人が聴いたところ、11件中8件が「無駄時間
+# (入れてはいけない)」、残り3件も「範囲の終わりかけに演奏が始まる」だけで、
+# 「演奏している」は0件だった。
+#
+# 実測で分かったのは、それらの隙間の**後ろ側の playing が極端に短い**ことである
+# (中央 1.5 秒、95%点 3.7 秒)。演奏が再開したのではなく、単発のノイズが
+# playing と判定されているだけで、その両側の待ち時間が橋渡しされていた。
+# 一方 260829 の通し稽古で救うべき隙間は、後ろ側の playing が中央 22.5 秒あった。
+#
+# そこで橋渡しの前に短い playing の断片を落とし、さらに前後の演奏が十分に
+# 続いていることを条件にする。この2つで 260802 の8件はすべて弾ける。
+BRIDGE_MIN_PLAY_S = 3.0     # これより短い playing は断片とみなし、橋渡しの足場にしない
+BRIDGE_MIN_FLANK_S = 10.0   # 前後の演奏がともにこの長さ以上でなければ橋渡ししない
+BRIDGE_PASSES = 4           # 橋渡しで足場が伸びると次が成立するので繰り返す
+
 # 無音とみなすレベル(分布の5%点からの上乗せ)
 SILENCE_MARGIN_DB = 6.0
 # チューニングとみなす A 一致率
@@ -388,6 +406,9 @@ def _merge_same(spans: list[Span]) -> list[Span]:
 def bridge_playing(spans: list[Span],
                    max_s: float = BRIDGE_MAX_S,
                    max_silence_run_s: float = BRIDGE_MAX_SILENCE_RUN_S,
+                   min_play_s: float = BRIDGE_MIN_PLAY_S,
+                   min_flank_s: float = BRIDGE_MIN_FLANK_S,
+                   passes: int = BRIDGE_PASSES,
                    ) -> tuple[list[Span], dict]:
     """演奏に挟まれ、発言をひとつも含まない非 playing の連なりを playing に倒す。
 
@@ -408,34 +429,56 @@ def bridge_playing(spans: list[Span],
     しまい、ダイジェストからチューニングを外す判断ができなくなる。
     """
     out = [Span(s.start, s.end, s.label, s.confidence) for s in spans]
-    n_bridged, sec_bridged = 0, 0.0
-    i = 0
-    while i < len(out):
-        if out[i].label != "playing":
-            i += 1
-            continue
-        j = i + 1
-        blocked = False
-        while j < len(out) and out[j].label != "playing":
-            if out[j].label in BRIDGE_STOP_LABELS:
-                blocked = True
-            # 無音が長く続くなら演奏は止まっている。冒頭の定数の説明を参照。
-            if out[j].label == "silence" and out[j].duration > max_silence_run_s:
-                blocked = True
-            j += 1
-        if j < len(out) and not blocked:
-            gap = out[j].start - out[i].end
-            if 0 < gap <= max_s:
-                for k in range(i + 1, j):
-                    sec_bridged += out[k].duration
-                    out[k].label = "playing"
-                n_bridged += 1
-        i = j
 
-    return _merge_same(out), {"n_bridged": n_bridged,
-                              "seconds_bridged": round(sec_bridged, 1),
-                              "bridge_max_s": max_s,
-                              "bridge_max_silence_run_s": max_silence_run_s}
+    # 単発のノイズを足場にしないよう、短い playing は先に断片として下ろす。
+    n_dropped, sec_dropped = 0, 0.0
+    for s in out:
+        if s.label == "playing" and s.duration < min_play_s:
+            s.label = "unclear"
+            n_dropped += 1
+            sec_dropped += s.duration
+    out = _merge_same(out)
+
+    n_bridged, sec_bridged = 0, 0.0
+    for _ in range(max(1, passes)):
+        changed = False
+        i = 0
+        while i < len(out):
+            if out[i].label != "playing":
+                i += 1
+                continue
+            j = i + 1
+            blocked = False
+            while j < len(out) and out[j].label != "playing":
+                if out[j].label in BRIDGE_STOP_LABELS:
+                    blocked = True
+                # 無音が長く続くなら演奏は止まっている。冒頭の定数の説明を参照。
+                if out[j].label == "silence" and out[j].duration > max_silence_run_s:
+                    blocked = True
+                j += 1
+            if j < len(out) and not blocked:
+                gap = out[j].start - out[i].end
+                flank = min(out[i].duration, out[j].duration)
+                if 0 < gap <= max_s and flank >= min_flank_s:
+                    for k in range(i + 1, j):
+                        sec_bridged += out[k].duration
+                        out[k].label = "playing"
+                    n_bridged += 1
+                    changed = True
+            i = j
+        # 橋渡しで足場が伸びると隣の隙間が条件を満たすようになる。
+        out = _merge_same(out)
+        if not changed:
+            break
+
+    return out, {"n_bridged": n_bridged,
+                 "seconds_bridged": round(sec_bridged, 1),
+                 "n_fragments_dropped": n_dropped,
+                 "seconds_fragments_dropped": round(sec_dropped, 1),
+                 "bridge_max_s": max_s,
+                 "bridge_max_silence_run_s": max_silence_run_s,
+                 "bridge_min_play_s": min_play_s,
+                 "bridge_min_flank_s": min_flank_s}
 
 
 def dynamic_range(src: Path, start: float, end: float,
