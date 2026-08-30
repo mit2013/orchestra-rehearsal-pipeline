@@ -291,11 +291,17 @@ def cmd_states2(args) -> None:
 
         spans, meta = states2_mod.classify(
             src, speech, win_s=args.win, hop_s=args.hop,
-            play_threshold=args.play_threshold)
+            play_threshold=args.play_threshold,
+            hyst_enter=args.hyst_enter, hyst_stay=args.hyst_stay,
+            loud_margin_db=args.loud_margin)
         spans, fill = states2_mod.fill_playing_gaps(spans, max_s=args.fill_gap)
         meta["gap_fill"] = fill
         log(f"  演奏に挟まれた短い unclear を埋め戻し: {fill['n_filled']} 件 / "
             f"{fill['seconds_filled']:.0f} 秒(上限 {fill['max_fill_s']:.0f} 秒)")
+        spans, br = states2_mod.bridge_playing(spans, max_s=args.bridge)
+        meta["bridge"] = br
+        log(f"  発言を含まない非 playing を文脈で橋渡し: {br['n_bridged']} 件 / "
+            f"{br['seconds_bridged']:.0f} 秒(上限 {br['bridge_max_s']:.0f} 秒)")
         spans, warm = states2_mod.mark_trailing_warmup(
             src, spans, meta["duration"],
             end_gap_s=args.warmup_gap, dyn_th=args.warmup_dyn)
@@ -512,6 +518,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="この確信度以上を playing とする(高いほど厳しく捨てる)")
     sp.add_argument("--fill-gap", type=float, default=states2_mod.MAX_FILL_S,
                     help="演奏に挟まれたこの長さ以下の unclear を playing に埋め戻す")
+    sp.add_argument("--bridge", type=float, default=states2_mod.BRIDGE_MAX_S,
+                    help="演奏に挟まれ発言を含まない非 playing を、この長さまで橋渡しする"
+                         "(0 で無効)")
+    sp.add_argument("--hyst-enter", type=float, default=states2_mod.HYST_ENTER_H,
+                    help="調和性がこの値以上で演奏に入る")
+    sp.add_argument("--hyst-stay", type=float, default=states2_mod.HYST_STAY_H,
+                    help="調和性がこの値を割るまで演奏のままにする")
+    sp.add_argument("--loud-margin", type=float, default=states2_mod.LOUD_MARGIN_DB,
+                    help="無音閾値からこれだけ上のレベルは調和性を問わず playing とする")
     sp.add_argument("--warmup-gap", type=float, default=states2_mod.WARMUP_END_GAP_S,
                     help="最後の playing 区間がブロック末尾からこの秒数以内で終わるとき音出しを疑う")
     sp.add_argument("--warmup-dyn", type=float, default=states2_mod.WARMUP_DYN_TH,
