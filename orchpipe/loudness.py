@@ -216,3 +216,36 @@ def measure_complex(
         "-map", "[s]", "-f", "null", "-",
     ]
     return _run_ebur128(cmd, " + ".join(p.name for p in inputs))
+
+
+# --- 目標ラウドネスへのゲイン収束 -------------------------------------------
+# コンプを通すとラウドネスが下がるので、当てて測り直して補正する。残差が
+# これ以下になったら打ち切る。
+GAIN_SETTLE_LU = 0.15
+GAIN_MAX_ITER = 3
+
+
+def solve_gain(
+    measure_after,
+    target_lufs: float,
+    gain_db: float,
+    settle_lu: float = GAIN_SETTLE_LU,
+    max_iter: int = GAIN_MAX_ITER,
+    on_step=None,
+) -> tuple[float, "Loudness"]:
+    """マスター通過後のラウドネスが目標に乗るゲインを求める。
+
+    `measure_after(gain_db) -> Loudness` を呼びながら残差を足し込む。母艦の
+    ブロック書き出し(`mix.py`)と現場プロキシからの切り出し(`field.py`)で
+    **同じ手続きを使うため**にここへ置いてある。分けて書くと設定が食い違う。
+    """
+    result = None
+    for _ in range(max_iter):
+        result = measure_after(gain_db)
+        resid = target_lufs - result.integrated
+        if on_step is not None:
+            on_step(gain_db, result, resid)
+        if abs(resid) <= settle_lu:
+            break
+        gain_db += resid
+    return gain_db, result

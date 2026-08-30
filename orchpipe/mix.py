@@ -33,9 +33,12 @@ from .loudness import (
     DEFAULT_COMP_THRESHOLD_OFFSET,
     DEFAULT_TARGET_LUFS,
     DEFAULT_TRUE_PEAK_DB,
+    GAIN_MAX_ITER,
+    GAIN_SETTLE_LU,
     master_chain,
     measure,
     measure_complex,
+    solve_gain,
 )
 from .normalize import _reference_window, norm_path
 from .util import FFMPEG, PipelineError, log, probe_audio, read_json, run, write_json
@@ -43,9 +46,6 @@ from .util import FFMPEG, PipelineError, log, probe_audio, read_json, run, write
 FINAL_SUFFIX = "_final"
 # 統合ラウドネスがこれ以上ずれていたら異常とみなす(仕様は ±1 LU)。
 LOUDNESS_TOLERANCE_LU = 1.0
-# ゲイン補正を打ち切る残差と、その繰り返し回数の上限。
-GAIN_SETTLE_LU = 0.15
-GAIN_MAX_ITER = 3
 
 
 def final_path(trimmed: Path, block: str) -> Path:
@@ -176,17 +176,17 @@ def run_mix(
         log(f"    合成後 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
         # 2. コンプを通すとラウドネスが下がるので、実際に通して測り直して補正する。
-        after_comp = None
-        for _ in range(GAIN_MAX_ITER):
-            # 下見なのでリミッターのオーバーサンプルは省く(統合ラウドネスは変わらない)。
-            after_comp = measure_complex(
-                inputs, f"{premix};[m]{chain(gain, sr, oversample=1)}[out]", "out", trim=trim)
-            resid = target_lufs - after_comp.integrated
-            log(f"    マスター通過後 {after_comp.integrated:+.1f} LUFS (残差 {resid:+.2f} LU)")
-            if abs(resid) <= GAIN_SETTLE_LU:
-                break
-            gain += resid
-            log(f"    ゲインを {gain:+.2f} dB に補正")
+        #    下見なのでリミッターのオーバーサンプルは省く(統合ラウドネスは変わらない)。
+        def after_master(g: float):
+            return measure_complex(
+                inputs, f"{premix};[m]{chain(g, sr, oversample=1)}[out]", "out", trim=trim)
+
+        def report(g: float, res, resid: float) -> None:
+            log(f"    マスター通過後 {res.integrated:+.1f} LUFS (残差 {resid:+.2f} LU)")
+            if abs(resid) > GAIN_SETTLE_LU:
+                log(f"    ゲインを {g + resid:+.2f} dB に補正")
+
+        gain, after_comp = solve_gain(after_master, target_lufs, gain, on_step=report)
 
         # 3. 書き出し
         cmd = [FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y"]
