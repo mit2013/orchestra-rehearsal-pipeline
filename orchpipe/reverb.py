@@ -16,7 +16,9 @@ ffmpeg の `afir` はこの環境で wet 側が出力されない(`dry=0` にす
 
 ## インパルス応答
 
-既定は Waves IRLive に同梱の実在ホール(`Hall 3`、残響 1.72 秒、立ち上がり 26 ms)。
+既定は Waves IRLive に同梱の実在ホール(`Hall 2`、残響 1.81 秒、立ち上がり 37 ms)。
+4種を聴き比べたうえで人が選んだもの(他は Hall 3 が 1.72 秒、Hall 4 が 1.96 秒、
+Hall 5 が 3.29 秒)。
 これは普通の 48kHz ステレオ WAV なので、そのまま読める。`assets/ir/hall.wav` を
 置くとそちらが優先される。Waves を消す予定があるなら、そこへコピーしておくこと。
 """
@@ -33,7 +35,7 @@ DEFAULT_MIX = 0.15
 BLOCK_FRAMES = 1 << 20
 
 WAVES_IR_DIR = Path("/Applications/Waves/Data/IR1Impulses V2/IR-Live Impulses/Halls")
-DEFAULT_IR_NAME = "Hall 3.wav"
+DEFAULT_IR_NAME = "Hall 2.wav"
 REPO_IR = Path(__file__).resolve().parent.parent / "assets" / "ir" / "hall.wav"
 
 

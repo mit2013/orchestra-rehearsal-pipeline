@@ -273,8 +273,8 @@ output/260802/
 
 ### ホール残響
 
-実在ホールのインパルス応答(既定は Waves IRLive の `Hall 3`、残響 1.72 秒、
-立ち上がり 26 ms)を **15%** 混ぜる。畳み込みは `pedalboard.Convolution`(pip)で行い、
+実在ホールのインパルス応答(既定は Waves IRLive の `Hall 2`、残響 1.81 秒、
+立ち上がり 37 ms。4種を聴き比べて選んだ)を **15%** 混ぜる。畳み込みは `pedalboard.Convolution`(pip)で行い、
 **Waves のプラグイン本体は実行時に要らない**(IR は普通の 48kHz ステレオ WAV)。
 `assets/ir/hall.wav` を置くとそちらが優先される。`--reverb-mix 0` で無効。
 
