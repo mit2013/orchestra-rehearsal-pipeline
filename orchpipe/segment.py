@@ -551,13 +551,13 @@ def propose_segments(
     default_penalty: float = 12.0,
     guard_s: float = 120.0,
     pre_roll_s: float = TUNING_PRE_ROLL_S,
-    tuning_first: bool = False,
+    tuning_first: bool = True,
 ) -> tuple[list[Segment], dict]:
     """境界候補を提案する。戻り値は (区間リスト, 解析メタ情報)。
 
-    `tuning_first` を立てると、スコアからの粗い区切りではなく**チューニングを
-    合奏の開始**として区間を組む(`_segments_from_tuning`)。検出されたチューニングの
-    数が `splits` と食い違う場合は従来の経路に落とす。
+    既定は `tuning_first`(**チューニングを合奏の開始**として区間を組む、
+    `_segments_from_tuning`)。検出されたチューニングの数が `splits` と食い違う場合と、
+    そもそも区間を組めない場合は、合奏らしさスコアからの区切りに落ちる。
     """
     score = ensemble_score(wf, smooth_s=smooth_s)
     thr = decision_threshold(score)

@@ -406,6 +406,30 @@ def field_script(
 WATCH_POLL_S = 5.0
 WATCH_STABLE_S = 15.0
 
+# 受け口は iCloud Drive にした。iPhone(a-Shell)からこのフォルダへ書き出せば、
+# Mac 側で同じフォルダにファイルが現れる。Tailscale で scp する場合も、置き場を
+# ここにすればコマンドは変わらない。
+ICLOUD_ROOT = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+INBOX_NAME = "orchestra-recording-pipeline/inbox"
+
+
+def default_inbox() -> Path:
+    return ICLOUD_ROOT / "orchestra-recording-pipeline" / "inbox"
+
+
+def ensure_inbox(path: Path | None = None) -> Path:
+    """受け口のフォルダを用意する。iCloud Drive が無効なら理由を添えて止める。"""
+    dst = path or default_inbox()
+    if path is None and not ICLOUD_ROOT.is_dir():
+        raise PipelineError(
+            f"iCloud Drive が見つかりません({ICLOUD_ROOT})。\n"
+            "  Mac の システム設定 → Apple アカウント → iCloud → iCloud Drive を"
+            "オンにしてください。\n"
+            "  別の場所を使う場合は --dir で指定してください。"
+        )
+    dst.mkdir(parents=True, exist_ok=True)
+    return dst
+
 
 def wait_for_proxy(
     watch_dir: Path,

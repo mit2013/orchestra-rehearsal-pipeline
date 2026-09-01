@@ -439,8 +439,10 @@ def cmd_review_apply(args) -> None:
 def cmd_field_watch(args) -> None:
     """所定のフォルダにプロキシが届くのを待ち、境界レビューの手前まで進める。"""
     outdir = out_dir(args.root, args.date)
+    watch_dir = field_mod.ensure_inbox(Path(args.dir) if args.dir else None)
+    log(f"受け口: {watch_dir}")
     src = field_mod.wait_for_proxy(
-        Path(args.dir), pattern=args.pattern, poll_s=args.poll,
+        watch_dir, pattern=args.pattern, poll_s=args.poll,
         stable_s=args.stable, timeout_s=args.timeout,
     )
     field_mod.receive_proxy(src, outdir, args.date, group=args.group, move=args.move)
@@ -613,8 +615,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0, help="keep区間を外側へ広げる安全マージン [秒]")
     sp.add_argument("--penalty", type=float, default=12.0, help="--splits 未指定時の区間切り替えペナルティ")
     sp.add_argument("--no-previews", action="store_true", help="プレビュー音声と波形画像を作らない")
-    sp.add_argument("--tuning-first", action="store_true",
-                    help="スコアからの区切りではなく、チューニングを合奏の開始として区間を組む")
+    sp.add_argument("--no-tuning-first", dest="tuning_first", action="store_false",
+                    help="チューニング起点をやめ、合奏らしさスコアからの区切りだけで決める")
     sp.set_defaults(func=cmd_propose)
 
     sp = common(sub.add_parser("apply", help="確定JSONにもとづきトリミング"))
@@ -695,7 +697,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_field_receive)
 
     sp = common(sub.add_parser("field-watch", help="プロキシが届くのを待ち、境界レビューの手前まで進める"))
-    sp.add_argument("--dir", required=True, help="見張るフォルダ(iCloud Drive でも scp の置き場でもよい)")
+    sp.add_argument("--dir", default=None,
+                    help="見張るフォルダ(既定: iCloud Drive の "
+                         "orchestra-recording-pipeline/inbox)")
     sp.add_argument("--pattern", default="*.mp3")
     sp.add_argument("--group", default="ext")
     sp.add_argument("--splits", type=int, default=None, help="propose に渡す分割数のヒント")
@@ -747,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0)
     sp.add_argument("--penalty", type=float, default=12.0)
     sp.add_argument("--no-previews", action="store_true")
-    sp.add_argument("--tuning-first", action="store_true")
+    sp.add_argument("--no-tuning-first", dest="tuning_first", action="store_false")
     sp.set_defaults(func=cmd_all)
 
     return p
