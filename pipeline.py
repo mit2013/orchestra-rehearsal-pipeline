@@ -31,6 +31,8 @@ from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
 from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
+from orchpipe import field as field_mod
+from orchpipe import review_page as review_mod
 from orchpipe import gdrive_upload as gdrive_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
@@ -42,7 +44,8 @@ from orchpipe import normalize as norm_mod
 from orchpipe import preview as preview_mod
 from orchpipe import segment as seg_mod
 from orchpipe.recorder_profiles import DEFAULT_PROFILE, PROFILES, get_profile
-from orchpipe.util import PipelineError, fmt_time, log, out_dir, read_json, write_json
+from orchpipe.util import (PipelineError, fmt_time, log, out_dir, parse_time,
+                           read_json, write_json)
 
 ROOT_DEFAULT = Path(__file__).resolve().parent
 
@@ -89,7 +92,23 @@ def _load_takes(root: Path, date: str, outdir: Path) -> list[ingest_mod.Take]:
 
 
 def _merged_paths(outdir: Path, groups) -> dict[str, Path]:
-    return {g: merge_mod.merged_path(outdir, g) for g in groups}
+    """解析対象になる結合済みファイル。
+
+    現場経路では原本を結合した WAV が母艦に無く、iPhone が作った 320kbps の
+    プロキシ 1 本しか届いていない。WAV が無くプロキシがあればそちらを使う
+    (`propose` は ffmpeg でデコードして特徴量を取るだけなので、入力が MP3 でも
+    そのまま動く)。
+    """
+    out: dict[str, Path] = {}
+    for g in groups:
+        wav = merge_mod.merged_path(outdir, g)
+        if not wav.exists():
+            proxy = field_mod.proxy_path(outdir, g)
+            if proxy.exists():
+                out[g] = proxy
+                continue
+        out[g] = wav
+    return out
 
 
 def _require_merged(outdir: Path, groups) -> dict[str, Path]:
@@ -156,6 +175,7 @@ def cmd_propose(args) -> None:
         smooth_s=args.smooth,
         default_penalty=args.penalty,
         guard_s=args.guard,
+        tuning_first=args.tuning_first,
     )
 
     print()
@@ -200,6 +220,12 @@ def cmd_apply(args) -> None:
     takes = _load_takes(args.root, args.date, outdir)
     total = sum(t.duration for t in takes)
     sources = _require_merged(outdir, groups)
+    proxies = [p.name for p in sources.values() if p.suffix.lower() == ".mp3"]
+    if proxies:
+        raise PipelineError(
+            f"{', '.join(proxies)} は現場プロキシ(MP3)です。`apply` は原本の WAV を"
+            "切り出す段なので使えません。現場経路では `field-export` を使ってください"
+        )
     want = _check_groups(args.groups, groups)
     if want:
         sources = {g: p for g, p in sources.items() if g in want}
@@ -254,6 +280,214 @@ def cmd_export(args) -> None:
     for t in tracks:
         print(f"  {t.number}. {t.title:<6} {t.wav.name}  /  {t.mp3.name}")
     print(f"\n  出力先: {outdir / 'export'}")
+
+
+def cmd_field_script(args) -> None:
+    """現場(iPhone / a-Shell)で流すスクリプトを書き出す。"""
+    outdir = out_dir(args.root, args.date)
+    outdir.mkdir(parents=True, exist_ok=True)
+    cfg = config_mod.load(outdir) if (outdir / "session_config.json").exists() else config_mod.SessionConfig()
+    profile = get_profile(args.recorder or DEFAULT_PROFILE)
+    tracks = list(profile.channel_groups[args.group])
+    manifest = outdir / "ingest.json"
+    if manifest.exists():
+        # 実際の TAKE 名を使う。iPhone にコピーしたときのフォルダ構成をそのまま想定する。
+        loaded = _load_takes(args.root, args.date, outdir)
+        takes = len(loaded)
+        files = [f"{Path(t.files[tr]).parent.name}/{Path(t.files[tr]).name}"
+                 for t in loaded for tr in tracks]
+    else:
+        takes = args.takes
+        files = [f"{args.date}_{i:03d}.TAKE/{args.date}_{i:03d}_{t}.WAV"
+                 for i in range(1, takes + 1) for t in tracks]
+    text = field_mod.field_script(
+        args.date, files, takes, len(tracks),
+        out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
+        gain_db=args.gain, bitrate=args.bitrate, name=args.name,
+    )
+    dst = outdir / args.name
+    dst.write_text(text, encoding="utf-8")
+    print(text)
+    print(f"  保存先: {dst}")
+
+
+def cmd_field_proxy(args) -> None:
+    """母艦側でプロキシを作る(検証用、および iPhone が使えないときの代替)。"""
+    outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
+    cfg = config_mod.load(outdir)
+    takes = _load_takes(args.root, args.date, outdir)
+    tracks = list(groups[args.group])
+    inputs = [t.files[tr] for t in takes for tr in tracks]
+    lr_map = cfg.ext_lr_map if len(tracks) == 2 else "normal"
+    dst = Path(args.output) if args.output else field_mod.proxy_path(outdir, args.group)
+    if dst.exists() and not args.force:
+        raise PipelineError(f"{dst.name} が既にあります(作り直すには --force)")
+    info = field_mod.build_proxy(inputs, len(takes), len(tracks), dst,
+                                 lr_map=lr_map, gain_db=args.gain, bitrate=args.bitrate)
+    print()
+    print(f"=== 現場プロキシ ({args.date}) ===")
+    print(f"  {dst}")
+    print(f"  {info['size_mb']:.0f} MiB / ゲイン {info['gain_db']:+.1f} dB / {info['bitrate']}")
+    print(f"  符号化直前のピーク: {info['pre_encode_peak_db']:+.2f} dBFS")
+
+
+def cmd_field_receive(args) -> None:
+    """届いたプロキシを output/{date}/ に置き、下流が動く ingest.json を書く。"""
+    outdir = out_dir(args.root, args.date)
+    field_mod.receive_proxy(Path(args.input), outdir, args.date,
+                            group=args.group, move=args.move)
+    config_mod.ensure(outdir, args.root)
+
+
+def _review_blocks(outdir: Path, path: Path) -> list[dict]:
+    """レビュー対象の keep 区間。名前は export と同じ規則で付ける。"""
+    from orchpipe.apply import load_confirmed
+    from orchpipe.export import block_titles
+
+    keeps = load_confirmed(path, float("inf"))
+    titles = block_titles(len(keeps))
+    return [{"start": k["start"], "end": k["end"], "name": t,
+             "label": k.get("label", "")}
+            for k, t in zip(keeps, titles)]
+
+
+def cmd_review_page(args) -> None:
+    """ブロックの頭と尻を聴いて境界を決めるページを組み立てる。"""
+    outdir = out_dir(args.root, args.date)
+    recorder, groups = _session_info(args.root, args.date, outdir)
+    cfg = config_mod.load(outdir)
+    src = Path(args.source) if args.source else _require_merged(outdir, groups)[args.group]
+    given = Path(args.input) if args.input else None
+    if given is None:
+        for name in ("confirmed.json", "candidates.json"):
+            if (outdir / name).exists():
+                given = outdir / name
+                break
+    if given is None or not given.exists():
+        raise PipelineError(
+            f"{outdir} に confirmed.json も candidates.json もありません。"
+            "先に `propose` を実行してください。"
+        )
+    log(f"境界の入力: {given.name} / 音源: {src.name}")
+    blocks = _review_blocks(outdir, given)
+    dst = review_mod.build(
+        outdir, args.date, src, blocks, orchestra=cfg.orchestra,
+        pre_s=args.pre, post_s=args.post, bitrate=args.bitrate, force=args.force,
+    )
+    print()
+    print(f"=== 境界レビューのページ ({args.date}) ===")
+    for b in blocks:
+        print(f"  {b['name']:<6} {fmt_time(b['start'])} – {fmt_time(b['end'])}  "
+              f"({fmt_time(b['end'] - b['start'])})")
+    print(f"  {dst}")
+    print("  Artifact として公開すれば iPhone で判定できます。")
+
+
+def cmd_review_apply(args) -> None:
+    """レビューページに保存された判定を confirmed.json に反映する。"""
+    outdir = out_dir(args.root, args.date)
+    state = read_json(Path(args.input))
+    items = state.get("state", state).get("items", {})
+    if not items:
+        raise PipelineError(f"{args.input} に items がありません")
+
+    src = outdir / "confirmed.json"
+    if not src.exists():
+        raise PipelineError(f"{src} がありません")
+    data = read_json(src)
+    keeps = [d for d in data if str(d.get("action", "")).lower() == "keep"]
+
+    moved = []
+    for i, k in enumerate(keeps, start=1):
+        for kind, key in (("head", "start"), ("tail", "end")):
+            it = items.get(f"b{i}-{kind}") or {}
+            shift = float(it.get("shift") or 0)
+            if not shift:
+                continue
+            before = parse_time(k[key])
+            after = max(0.0, before + shift)
+            k[key] = fmt_time(after)
+            moved.append((i, kind, before, after, shift))
+
+    if not moved:
+        print("動かす境界はありませんでした。confirmed.json は変更していません。")
+        return
+
+    # remove 区間の端を、隣り合う keep に合わせて詰め直す。keep どうしが隣り合う
+    # ときは動かさない(どちらの移動も意図されたものなので上書きしてはいけない)。
+    for i, cur in enumerate(data):
+        if str(cur.get("action", "")).lower() != "remove":
+            continue
+        if i > 0 and str(data[i - 1].get("action", "")).lower() == "keep":
+            cur["start"] = data[i - 1]["end"]
+        if i + 1 < len(data) and str(data[i + 1].get("action", "")).lower() == "keep":
+            cur["end"] = data[i + 1]["start"]
+
+    if not args.force:
+        backup = src.with_suffix(".json.review_bak")
+        backup.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        log(f"元の境界を控えました: {backup.name}")
+    write_json(src, data)
+    print()
+    print(f"=== 境界を更新しました ({args.date}) ===")
+    for i, kind, before, after, shift in moved:
+        print(f"  ブロック{i} の{'頭' if kind == 'head' else '尻'}  "
+              f"{fmt_time(before)} -> {fmt_time(after)}  ({shift:+.0f} 秒)")
+
+
+def cmd_field_watch(args) -> None:
+    """所定のフォルダにプロキシが届くのを待ち、境界レビューの手前まで進める。"""
+    outdir = out_dir(args.root, args.date)
+    watch_dir = field_mod.ensure_inbox(Path(args.dir) if args.dir else None)
+    log(f"受け口: {watch_dir}")
+    src = field_mod.wait_for_proxy(
+        watch_dir, pattern=args.pattern, poll_s=args.poll,
+        stable_s=args.stable, timeout_s=args.timeout,
+    )
+    field_mod.receive_proxy(src, outdir, args.date, group=args.group, move=args.move)
+    config_mod.ensure(outdir, args.root)
+    if args.receive_only:
+        print(f"\n受け取りました: {field_mod.proxy_path(outdir, args.group)}")
+        return
+
+    # 以降は既存のサブコマンドと同じ処理を、同じ引数の既定値で呼ぶ。
+    sub = build_parser()
+    prop = sub.parse_args(["propose", "--date", args.date, "--root", str(args.root),
+                           "--source", args.group, "--no-previews"]
+                          + (["--splits", str(args.splits)] if args.splits else []))
+    cmd_propose(prop)
+    rev = sub.parse_args(["review-page", "--date", args.date, "--root", str(args.root),
+                          "--group", args.group])
+    cmd_review_page(rev)
+    print()
+    print("次: review_page.html を Artifact として公開し、iPhone で境界を確定する")
+    print(f"    そのあと  pipeline.py review-apply --date {args.date} --input <保存されたJSON>")
+    print(f"    続けて    pipeline.py field-export --date {args.date}")
+
+
+def cmd_field_export(args) -> None:
+    """プロキシ 1 本から確定境界でブロックを切り出し、配布用 MP3 にする。"""
+    outdir = out_dir(args.root, args.date)
+    cfg = config_mod.load(outdir)
+    proxy = Path(args.input) if args.input else field_mod.proxy_path(outdir, args.group)
+    if not proxy.exists():
+        raise PipelineError(f"{proxy} がありません。先に `field-receive` を実行してください。")
+    confirmed = Path(args.confirmed) if args.confirmed else outdir / "confirmed.json"
+    rows = field_mod.run_field_export(
+        proxy, confirmed, outdir, cfg, args.date,
+        variant=args.variant, proxy_gain_db=args.gain,
+        target_lufs=args.target_lufs, true_peak_db=args.true_peak,
+        ref_margin=args.ref_margin, bitrate=args.bitrate, force=args.force,
+    )
+    write_json(outdir / "field_export.json", {"proxy": str(proxy), "blocks": rows})
+    print()
+    print(f"=== 現場経路の書き出し ({args.date}) ===")
+    for r in rows:
+        a = r["after"]
+        print(f"  {Path(r['path']).name}  {a['integrated_lufs']:+.1f} LUFS / "
+              f"レンジ {a['lra_lu']:.1f} LU / TP {a['true_peak_db']:+.1f} dBFS / "
+              f"{r['size_mb']:.0f} MiB")
 
 
 def cmd_box_upload(args) -> None:
@@ -381,6 +615,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0, help="keep区間を外側へ広げる安全マージン [秒]")
     sp.add_argument("--penalty", type=float, default=12.0, help="--splits 未指定時の区間切り替えペナルティ")
     sp.add_argument("--no-previews", action="store_true", help="プレビュー音声と波形画像を作らない")
+    sp.add_argument("--no-tuning-first", dest="tuning_first", action="store_false",
+                    help="チューニング起点をやめ、合奏らしさスコアからの区切りだけで決める")
     sp.set_defaults(func=cmd_propose)
 
     sp = common(sub.add_parser("apply", help="確定JSONにもとづきトリミング"))
@@ -421,6 +657,74 @@ def build_parser() -> argparse.ArgumentParser:
                          "既配布分を差し替えず別版として並べたいときに使う")
     sp.set_defaults(func=cmd_export)
 
+    sp = with_recorder(common(sub.add_parser(
+        "field-script", help="現場(iPhone/a-Shell)で流すプロキシ作成スクリプトを出す")))
+    sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
+    sp.add_argument("--takes", type=int, default=2, help="その日の TAKE 数")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
+                    help="符号化前に当てる固定ゲイン [dB]")
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.add_argument("--name", default="field_master.sh")
+    sp.set_defaults(func=cmd_field_script)
+
+    sp = common(sub.add_parser("field-proxy", help="母艦側でプロキシを作る(検証・代替用)"))
+    sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
+    sp.add_argument("--output", default=None, help="出力先 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB)
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.set_defaults(func=cmd_field_proxy)
+
+    sp = common(sub.add_parser("review-page", help="ブロックの頭と尻を聴いて境界を決めるページを作る"))
+    sp.add_argument("--input", default=None,
+                    help="境界の入力 (既定: confirmed.json、無ければ candidates.json)")
+    sp.add_argument("--source", default=None, help="音源 (既定: 結合済み WAV かプロキシ)")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--pre", type=float, default=review_mod.PRE_S,
+                    help="境界の手前に含める長さ [秒]")
+    sp.add_argument("--post", type=float, default=review_mod.POST_S,
+                    help="境界の後ろに含める長さ [秒]")
+    sp.add_argument("--bitrate", default=review_mod.CLIP_BITRATE)
+    sp.set_defaults(func=cmd_review_page)
+
+    sp = common(sub.add_parser("review-apply", help="レビューページの判定を confirmed.json に反映"))
+    sp.add_argument("--input", required=True, help="ページから取り出した JSON")
+    sp.set_defaults(func=cmd_review_apply)
+
+    sp = common(sub.add_parser("field-receive", help="届いたプロキシを取り込み ingest.json を書く"))
+    sp.add_argument("--input", required=True, help="受け取ったプロキシ MP3")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--move", action="store_true", help="コピーではなく移動する")
+    sp.set_defaults(func=cmd_field_receive)
+
+    sp = common(sub.add_parser("field-watch", help="プロキシが届くのを待ち、境界レビューの手前まで進める"))
+    sp.add_argument("--dir", default=None,
+                    help="見張るフォルダ(既定: iCloud Drive の "
+                         "orchestra-recording-pipeline/inbox)")
+    sp.add_argument("--pattern", default="*.mp3")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--splits", type=int, default=None, help="propose に渡す分割数のヒント")
+    sp.add_argument("--poll", type=float, default=field_mod.WATCH_POLL_S)
+    sp.add_argument("--stable", type=float, default=field_mod.WATCH_STABLE_S,
+                    help="サイズがこの秒数変わらなければ書き込み完了とみなす")
+    sp.add_argument("--timeout", type=float, default=None, help="待つ上限 [秒]")
+    sp.add_argument("--move", action="store_true")
+    sp.add_argument("--receive-only", action="store_true",
+                    help="受け取るだけで propose / review-page は走らせない")
+    sp.set_defaults(func=cmd_field_watch)
+
+    sp = common(sub.add_parser("field-export", help="プロキシから配布用 MP3 を切り出す"))
+    sp.add_argument("--input", default=None, help="プロキシ MP3 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
+    sp.add_argument("--confirmed", default=None, help="確定JSON (既定: output/{date}/confirmed.json)")
+    sp.add_argument("--group", default="ext")
+    sp.add_argument("--variant", default="", help="版名。ファイル名末尾とID3タイトルに入る")
+    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
+                    help="プロキシに当てた固定ゲイン [dB]。測定前に打ち消す")
+    sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
+    sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
+    sp.add_argument("--ref-margin", type=float, default=120.0)
+    sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.set_defaults(func=cmd_field_export)
+
     sp = common(sub.add_parser("box-upload", help="MP3 を Box にアップロードし共有リンクを発行"))
     sp.add_argument("--auth-timeout", type=float, default=300.0,
                     help="初回認証でブラウザ操作を待つ秒数")
@@ -447,6 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard", type=float, default=120.0)
     sp.add_argument("--penalty", type=float, default=12.0)
     sp.add_argument("--no-previews", action="store_true")
+    sp.add_argument("--no-tuning-first", dest="tuning_first", action="store_false")
     sp.set_defaults(func=cmd_all)
 
     return p

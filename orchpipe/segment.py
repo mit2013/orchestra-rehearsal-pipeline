@@ -376,9 +376,24 @@ def _apply_guard(
     return merged
 
 
-# チューニング開始の手前に置く余裕。検出開始は実測で最大 0.5 秒ほど遅れることが
-# あるため、それを吸収したうえで頭を欠かない量にする。
-TUNING_PRE_ROLL_S = 5.0
+# チューニング開始の手前に置く余裕。**2 秒。**
+#
+# 当初は 5 秒だった。260829 の境界をレビューページで聴いてもらったところ、
+# 3ブロックとも「頭を +5 秒(= 検出位置ちょうど)まで詰めてよい」という判定で、
+# 5 秒だとその手前の音出しと無音がブロックの頭に入るだけだった。
+#
+# ただし**検出位置ちょうどにはできない。** 同じ試聴で、1件は A が想定より
+# 1 秒ほど早く聞こえたという報告があった。実測でも検出位置の 0.5 秒手前で
+# A 成分の比率が 0.279 まで上がっている箇所がある:
+#
+#   ブロック  -0.5 秒   検出位置   +0.5 秒   +1.0 秒
+#   前半      0.279     0.105      0.330     0.565
+#   中盤      0.044     0.034      0.675     ―
+#
+# tuning.py は核となる区間を見つけたあと倍音で頭を前へ伸ばす(`tuning_head_mask`)
+# ので報告される開始はおおむね音の手前に来るが、常にではない。そこで
+# **1 秒のばらつきを吸収できるだけの 2 秒**を残す。
+TUNING_PRE_ROLL_S = 2.0
 # 粗い境界からこの範囲内にあるチューニングだけを対象にする。実測では正解の
 # チューニング開始は粗い境界の -71〜+128 秒に分布していた。一方、合奏中の
 # 紛らわしい持続音は 25 分以上離れており、この幅なら拾わない。
@@ -454,6 +469,73 @@ def _label_segments(
     return out
 
 
+# チューニングを起点に組むとき、これより短い間隔のチューニングは同じ合奏の
+# 一部とみなして落とす。
+TUNING_MIN_SPACING_S = 600.0
+
+
+def _last_above(score: np.ndarray, wf: WindowFeatures, thr: float,
+                lo: float, hi: float) -> float | None:
+    """[lo, hi) に**まるごと収まる**窓のうち、スコアが閾値を超える最後の窓の終わり[秒]。
+
+    窓の終わりまで `hi` に収める必要がある。20 秒窓は次のチューニングにまたがると
+    そのチューニングの高いスコアを拾ってしまい、休憩をまたいで合奏が続いていることに
+    なる(260829 合奏1 の終わりが 00:42:40 ではなく 00:47:11 になった)。
+    """
+    idx = [i for i, t in enumerate(wf.times)
+           if lo <= float(t) and float(t) + wf.win_s <= hi and score[i] >= thr]
+    if not idx:
+        return None
+    return min(hi, float(wf.times[idx[-1]]) + wf.win_s)
+
+
+def _segments_from_tuning(
+    events: list[TuningEvent],
+    score: np.ndarray,
+    wf: WindowFeatures,
+    thr: float,
+    total: float,
+    pre_roll_s: float,
+    min_spacing_s: float = TUNING_MIN_SPACING_S,
+) -> tuple[list[tuple[float, float, bool]], set[int]] | None:
+    """チューニングを合奏の開始とみなして区間を組む。
+
+    スコアからの粗い区切りは、休憩の話し声や長い部分練習で簡単に崩れる
+    (260829 では合奏1と合奏2をまたいで 94.6 分をひと続きの合奏と判定した)。
+    一方チューニングは **合奏の直前に必ず現れ、合奏の中には現れない**。検出が
+    その日のブロック数と一致するなら、そちらを起点にしたほうが確実である。
+
+    開始はチューニング開始(既定ではその位置ちょうど。`pre_roll_s` で手前に
+    ずらせる)。終了は「次のチューニングの手前で、合奏らしさが最後に閾値を超えた
+    窓の終わり」とする。
+    """
+    if not events:
+        return None
+    starts: list[float] = []
+    for ev in sorted(events, key=lambda e: e.start):
+        s = max(0.0, ev.start - pre_roll_s)
+        if starts and s - starts[-1] < min_spacing_s:
+            continue
+        starts.append(s)
+
+    segs: list[tuple[float, float, bool]] = []
+    snapped: set[int] = set()
+    cursor = 0.0
+    for i, s in enumerate(starts):
+        limit = starts[i + 1] if i + 1 < len(starts) else total
+        end = _last_above(score, wf, thr, s, limit)
+        if end is None or end <= s:
+            return None
+        if s > cursor:
+            segs.append((cursor, s, False))
+        snapped.add(len(segs))
+        segs.append((s, end, True))
+        cursor = end
+    if cursor < total:
+        segs.append((cursor, total, False))
+    return segs, snapped
+
+
 # ---------------------------------------------------------------------------
 # エントリポイント
 # ---------------------------------------------------------------------------
@@ -469,8 +551,14 @@ def propose_segments(
     default_penalty: float = 12.0,
     guard_s: float = 120.0,
     pre_roll_s: float = TUNING_PRE_ROLL_S,
+    tuning_first: bool = True,
 ) -> tuple[list[Segment], dict]:
-    """境界候補を提案する。戻り値は (区間リスト, 解析メタ情報)。"""
+    """境界候補を提案する。戻り値は (区間リスト, 解析メタ情報)。
+
+    既定は `tuning_first`(**チューニングを合奏の開始**として区間を組む、
+    `_segments_from_tuning`)。検出されたチューニングの数が `splits` と食い違う場合と、
+    そもそも区間を組めない場合は、合奏らしさスコアからの区切りに落ちる。
+    """
     score = ensemble_score(wf, smooth_s=smooth_s)
     thr = decision_threshold(score)
     spread = float(np.percentile(score, 90) - np.percentile(score, 10)) or 1.0
@@ -498,13 +586,29 @@ def propose_segments(
         ", ".join(f"{fmt_time(e.start)}(純度{e.purity:.2f}/{e.duration:.0f}s)"
                   for e in events[:12]) + (" ..." if len(events) > 12 else ""))
 
+    mode = "score"
+    snapped_from_tuning: set[int] = set()
+    if tuning_first:
+        built = _segments_from_tuning(events, score, wf, thr, total_duration, pre_roll_s)
+        n_keep = 0 if built is None else sum(1 for x in built[0] if x[2])
+        if built is None:
+            log("  チューニング起点: 組めませんでした。スコアからの区切りを使います")
+        elif splits and n_keep != splits:
+            log(f"  チューニング起点: 合奏 {n_keep} 区間で --splits {splits} と合いません。"
+                "スコアからの区切りを使います")
+        else:
+            segs, snapped_from_tuning = built
+            mode = "tuning"
+            log(f"  チューニング起点で組みました: 合奏 {n_keep} 区間 — " +
+                ", ".join(f"{fmt_time(a)}-{fmt_time(b)}" for a, b, v in segs if v))
+
     # 合奏の開始境界のみ、チューニング開始の手前に合わせる(終了側は手がかりが弱い)。
     # 終端ではなく開始を基準にするのは、チューニング自体も練習の一部として残す
     # ためと、guard のような粗い固定値に頼らず日付・ブロックによらない一貫した
     # 基準にするため。
-    snapped: set[int] = set()
+    snapped: set[int] = set(snapped_from_tuning) if mode == "tuning" else set()
     used: set[int] = set()
-    for i in range(1, len(segs)):
+    for i in range(1, len(segs) if mode == "score" else 0):
         if not segs[i][2]:
             continue
         picked = _select_tuning(segs[i][0], events, used)
@@ -518,8 +622,9 @@ def propose_segments(
             segs[i] = (new_b, segs[i][1], segs[i][2])
             snapped.add(i)
             used.add(ei)
+            where = "ちょうど" if pre_roll_s <= 0 else f"{pre_roll_s:.0f} 秒前"
             log(f"  合奏開始をチューニングに合わせました: {fmt_time(ev.start)} の "
-                f"{pre_roll_s:.0f} 秒前 -> {fmt_time(new_b)}")
+                f"{where} -> {fmt_time(new_b)}")
 
     segs = _apply_guard(segs, guard_s, total_duration, fixed_starts=snapped)
 
@@ -531,6 +636,7 @@ def propose_segments(
         "smooth_s": smooth_s,
         "guard_s": guard_s,
         "tuning_pre_roll_s": pre_roll_s,
+        "boundary_mode": mode,
         "silence_db": wf.silence_db,
         "win_s": wf.win_s,
         "hop_s": wf.hop_s,
@@ -539,7 +645,8 @@ def propose_segments(
             {**e.to_json(), "start": fmt_time(e.start), "end": fmt_time(e.end)}
             for e in events
         ],
-        "snapped_boundaries": sorted(fmt_time(segs[i][0]) for i in snapped),
+        "snapped_boundaries": sorted(fmt_time(segs[i][0]) for i in snapped
+                                     if i < len(segs)),
     }
     return result, meta
 

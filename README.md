@@ -303,6 +303,142 @@ MP3 は `libmp3lame` 320kbps 固定で、ID3タグを `mutagen` で書き込む:
 `export` は再エンコードをスキップした場合でもタグは毎回書き直す。団体名を変えたときは
 `export` を再実行するだけでよく、MP3 の再エンコードは走らない。
 
+## 現場前処理(帰宅前に MP3 を配る)
+
+素材は3時間で約 8GB(32bit float)あり、モバイル回線では送れない。そこで **iPhone
+上で 320kbps MP3 を1本だけ作り(「プロキシ」)、それだけを母艦へ送る**。母艦は
+届いた MP3 で境界提案からブロック切り出し、Box への配布までを済ませる。Drive 用の
+WAV は帰宅後に原本から作る。
+
+```bash
+# 母艦: 現場で流すスクリプトを用意しておく(その日の TAKE 名を埋め込む)
+.venv/bin/python pipeline.py field-script --date 260829
+
+# 現場: M4 を File Transfer モードにして iPhone に接続(M4 は電池駆動)
+#       microSD の TAKE を iPhone にコピーし、a-Shell で
+#       sh field_master.sh   -> 260829_proxy.mp3(3時間で約 413MiB)
+
+# 母艦: 受け口(iCloud Drive)を見張り、届いたら受け取って境界レビューの手前まで進める
+.venv/bin/python pipeline.py field-watch --date 260829 --splits 3
+
+# ここで review_page.html を Artifact として公開し、iPhone で境界を確定する
+.venv/bin/python pipeline.py review-apply --date 260829 --input <ページから取り出したJSON>
+
+.venv/bin/python pipeline.py field-export --date 260829
+.venv/bin/python pipeline.py box-upload   --date 260829
+.venv/bin/python pipeline.py notify       --date 260829
+```
+
+`field-watch` は `field-receive` → `propose` → `review-page` をまとめたもので、
+一つずつ実行してもよい。
+
+**受け口は iCloud Drive。** 既定は次のフォルダで、無ければ作る。
+
+```
+~/Library/Mobile Documents/com~apple~CloudDocs/orchestra-recording-pipeline/inbox/
+```
+
+iPhone(a-Shell)からここへ書き出せば、Mac 側の同じフォルダにファイルが現れる。
+**Mac 側で iCloud Drive を有効にしておくこと**(システム設定 → Apple アカウント →
+iCloud → iCloud Drive)。無効だと `field-watch` はその旨を出して止まる。
+Tailscale で `scp` する運用に変えるときも、置き場をこのフォルダにすればコマンドは
+変わらない(別の場所にするなら `--dir`)。
+
+転送中のファイルを掴まないよう、サイズが `--stable` 秒(既定 15 秒)変わらないことを
+確かめてから受け取る。
+
+プロキシに載せるのは**クリップを避けるための固定ゲイン(-14 dB)だけ**である。
+ラウドネス正規化・コンプ・リミッターは、境界が決まったあとに母艦がブロックごとに
+当てる(`field-export`)。境界が決まる前に単一ゲインを確定させると、ブロック間の
+音量差(260829 で 9.7 dB)がそのまま残ってしまうためである。固定ゲインは可逆なので、
+母艦は測定の前に +14 dB を戻す。
+
+260829 で原本経由と比べた結果:
+
+| | 結果 |
+|---|---|
+| ブロックごとのゲイン | **0.01 dB まで一致**(+4.00 / -5.70 / -2.50 dB) |
+| 配布 MP3 のラウドネス | 統合・レンジ・トゥルーピークとも一致 |
+| 境界提案 | **5区間すべて同一時刻**。チューニング検出も一致 |
+| 無音閾値 | -42.985 → -56.984 dBFS(固定ゲイン -14 dB ぶんちょうど) |
+| 音の差 | 位置ずれ 0.00 ms / 相関 0.9998 以上 / 残差は最悪 -34.6 dB(打楽器) |
+
+代償は MP3 の符号化が1世代増えることで、`-c copy` では切り出せない。詳細と検証は
+`orchestra_recording_pipeline_field_preprocess.md` を参照。
+
+`field-proxy` は母艦側で同じプロキシを作る(検証用、および iPhone が使えないときの
+代替)。`apply` にプロキシを渡すとエラーで止まる ― ブロック WAV は原本から切るため。
+
+### 律速は境界提案だった
+
+通しで走らせると、投入から境界レビューのページが出るまで 25 秒だった。転送も符号化も
+律速ではない。**律速は `propose` の境界が当たらないこと**である。260829 の自動提案は
+合奏1が 94.6 分(合奏1と休憩と合奏2をまたぐ)で、レビューページで秒単位に直せる幅を
+超えていた。対策は `--tuning-first`(下記)。
+
+## 境界レビューのページ
+
+```bash
+.venv/bin/python pipeline.py review-page  --date 260829     # HTML を組み立てる
+# Artifact として公開 -> iPhone で頭と尻を聴き、境界を動かして保存
+.venv/bin/python pipeline.py review-apply --date 260829 --input state.json
+```
+
+各ブロックの頭と尻について、境界の**前後45秒**を切り出して埋め込む。判定
+(よい / 切れている / 余分が長い)を押すだけでなく、**±5 / ±15 / ±30 秒のボタンで
+その場で境界を動かせる**。動かした結果の時刻と長さは表に出る。保存すると
+`artifact` capability でページ自身が新しい版になるので、その JSON を
+`review-apply` に渡せば `confirmed.json` に反映される(元は `.review_bak` に控える)。
+
+音源は結合済み WAV でもプロキシ MP3 でもよい。クリップはモノラル 96kbps で、
+6本を埋め込んで約 8MiB(Artifact の上限は 16MiB)。
+
+## チューニングを起点にした境界提案(既定)
+
+スコアからの区切り(合奏らしさ + Viterbi)は、休憩の話し声や長い部分練習で崩れる。
+260829 では合奏1の提案が 94.6 分になり、合奏1と休憩と合奏2をまたいでいた。一方
+**チューニングは合奏の直前に必ず現れ、合奏の中には現れない**。そこで既定では
+チューニングを起点に区間を組む。
+
+```bash
+.venv/bin/python pipeline.py propose --date 260829 --splits 3
+.venv/bin/python pipeline.py propose --date 260829 --splits 3 --no-tuning-first  # 従来の方式
+```
+
+チューニング検出の件数が `--splits` と食い違うときと、そもそも区間を組めないときは、
+自動的に従来の方式へ落ちる。
+
+260829 での結果:
+
+| ブロック | `--tuning-first` | 人が聴いた判定 |
+|---|---|---|
+| 合奏1 | 00:01:20 – 00:44:21 | 頭・尻とも「よい」 |
+| 合奏2 | 00:47:11 – 01:34:51 | 頭・尻とも「よい」 |
+| 合奏3 | 01:42:18 – 03:00:04 | 頭・尻とも「よい」 |
+
+開始はレビューページで人が確かめた位置と一致する。終了は `--guard` を外側へ
+足しているぶん実際の演奏の終わりより +19〜+101 秒あとになるが、その範囲は
+聴いてもらった結果すべて音出しで、曲は含まれていなかった。設計どおり
+「削りすぎない」側に出ている。
+
+### チューニングの手前に置く余裕は 2 秒
+
+`TUNING_PRE_ROLL_S` は **2 秒**。以前は 5 秒だった。260829 の試聴では3ブロックとも
+「検出位置ちょうどまで詰めてよい」という判定で、5 秒だと手前の音出しと無音が
+ブロックの頭に入るだけだった。
+
+ただし**ちょうどにはしない。** 同じ試聴で1件、A が想定より 1 秒ほど早く聞こえたと
+報告があった。実測でも検出位置の 0.5 秒手前で A 成分の比率が 0.279 まで上がっている
+箇所がある(検出位置では 0.105)。`tuning.py` は倍音で頭を前へ伸ばすので報告される
+開始はおおむね音の手前に来るが、常にではない。1 秒のばらつきを吸収できる 2 秒を残す。
+
+チューニング開始そのものを合奏の開始とし、終了は「次のチューニングの手前で合奏らしさが
+最後に閾値を超えた窓の終わり」とする。
+
+検証できたのは 260829 の1日だけである(260802 と 260726 の素材は残っていない)。
+それを承知のうえで既定に据えた。次の練習日でもう一度当たるか確認すること。
+外した日は `--no-tuning-first` で従来の方式に戻せる。
+
 ## クラウドアップロード
 
 用途が違うので、Box と Google Drive で共有の性格を変えている。
@@ -436,6 +572,18 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `mix` | `--comp-attack` | 100 ms | コンプのアタック |
 | `mix` | `--comp-release` | 1000 ms | コンプのリリース |
 | `mix` | `--comp-knee` | 6 dB | コンプのニー幅 |
+| `propose` | `--no-tuning-first` | — | チューニング起点をやめ、スコアからの区切りだけで決める |
+| `field-watch` | `--dir` | iCloud Drive の inbox | プロキシの置き場を見張る |
+| `field-watch` | `--stable` | 15 秒 | サイズがこの秒数変わらなければ書き込み完了とみなす |
+| `field-watch` | `--receive-only` | — | 受け取るだけで propose / review-page を走らせない |
+| `review-page` | `--pre` / `--post` | 45 秒 | 境界の前後に含める長さ |
+| `review-apply` | `--input` | 必須 | ページから取り出した JSON |
+| `field-script` | `--takes` | 2 | その日の TAKE 数(`ingest.json` があればそちらが優先) |
+| `field-script` / `field-proxy` / `field-export` | `--gain` | -14 dB | プロキシに載せる固定ゲイン |
+| `field-receive` | `--input` | 必須 | 受け取ったプロキシ MP3 |
+| `field-receive` | `--move` | — | コピーではなく移動する |
+| `field-export` | `--variant` | なし | 版名。`export` と同じ |
+| `field-export` | `--target-lufs` / `--true-peak` / `--ref-margin` | mix と同じ | マスタリングの設定 |
 | `box-upload` | `--auth-timeout` | 300 秒 | 初回認証でブラウザ操作を待つ秒数 |
 | `gdrive-upload` | `--auth-timeout` | 無制限 | 同上 |
 | `notify` | `--no-line` | — | LINE への push を行わない |
