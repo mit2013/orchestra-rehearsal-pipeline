@@ -628,3 +628,7 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `gdrive-upload` | `--auth-timeout` | 無制限 | 同上 |
 | `notify` | `--no-line` | — | LINE への push を行わない |
 | 全コマンド | `--root` / `--force` | — | 作業ディレクトリ / 中間ファイルの作り直し |
+
+## ライセンス
+
+MIT。[LICENSE](LICENSE) を参照。

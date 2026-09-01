@@ -159,4 +159,6 @@ instruction documents (`orchestra_recording_pipeline_*.md`) are the specificatio
 each change was written against, updated afterwards with what actually happened —
 including the parts that did not work.
 
+MIT licensed. See [LICENSE](LICENSE).
+
 Written with [Claude Code](https://claude.com/claude-code).
