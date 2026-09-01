@@ -19,7 +19,6 @@
 /output/**
 !/output/*/
 !/output/*/confirmed.json
-!/output/*/session_config.json
 # 研究ブランチの最終レポート(成果物なので追跡する)
 !/output/research_report.md
 
@@ -39,6 +38,10 @@ __pycache__/
 
 # ---------------------------------------------------------------------------
 # 資格情報(絶対にコミットしない)
+#
+# session_config.json は追跡しない。concert_date と box_parent_folder_id という
+# 「共有リンクの鍵の材料」が入るためである。手元の設定は残るが、公開リポジトリには
+# 出ない。ひな型は session_config.example.json を参照。
 # ---------------------------------------------------------------------------
 .env
 .env.*

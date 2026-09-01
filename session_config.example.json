@@ -1,0 +1,8 @@
+{
+  "ext_lr_map": "normal",
+  "source": "ext_only",
+  "mix_ratio": { "ext": 0.6, "int": 0.4 },
+  "orchestra": "Your Orchestra Name",
+  "concert_date": "yyyymmdd",
+  "box_parent_folder_id": "0"
+}

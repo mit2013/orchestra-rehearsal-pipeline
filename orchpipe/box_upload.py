@@ -10,6 +10,7 @@ Box が持つ `sha1` とローカルの SHA-1 を比べ、内容が同じなら�
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -18,12 +19,27 @@ from .config import SessionConfig
 from .export import find_mp3_files
 from .util import PipelineError, file_digest, log
 
-PASSWORD_SUFFIX = "{password_suffix}"
 ROOT_FOLDER_ID = "0"
+# 共有リンクのパスワードは `{concert_date}{接尾辞}`。**接尾辞はリポジトリに置かない。**
+# ここに書いてしまうと、共有 URL を知っている人が誰でもパスワードを計算できる。
+# `.env` の BOX_PASSWORD_SUFFIX から読む(`.env.example` を参照)。
+PASSWORD_SUFFIX_ENV = "BOX_PASSWORD_SUFFIX"
+
+
+def password_suffix() -> str:
+    suffix = os.environ.get(PASSWORD_SUFFIX_ENV, "")
+    if not suffix:
+        raise PipelineError(
+            f"{PASSWORD_SUFFIX_ENV} が設定されていません。\n"
+            "  .env に共有リンクのパスワードの接尾辞を書いてください"
+            "(例: BOX_PASSWORD_SUFFIX=#xxx)。\n"
+            "  この値はリポジトリに含めないでください。"
+        )
+    return suffix
 
 
 def build_password(concert_date: str) -> str:
-    """パスワードは `{concert_date}{password_suffix}`(例: {concert_date}{password_suffix})。"""
+    """パスワードは `{concert_date}{接尾辞}`。接尾辞は環境変数から読む。"""
     if not concert_date:
         raise PipelineError(
             "concert_date が空です。パスワードを生成できないため中止します。\n"
@@ -34,7 +50,7 @@ def build_password(concert_date: str) -> str:
         raise PipelineError(
             f"concert_date は yyyymmdd 形式の8桁である必要があります(実際: {concert_date!r})"
         )
-    return f"{concert_date}{PASSWORD_SUFFIX}"
+    return f"{concert_date}{password_suffix()}"
 
 
 def resolve_parent_folder_id(raw: str) -> str:
