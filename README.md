@@ -318,8 +318,8 @@ WAV は帰宅後に原本から作る。
 #       microSD の TAKE を iPhone にコピーし、a-Shell で
 #       sh field_master.sh   -> 260829_proxy.mp3(3時間で約 413MiB)
 
-# 母艦: 置き場を見張り、届いたら受け取って境界レビューの手前まで進める
-.venv/bin/python pipeline.py field-watch --date 260829 --dir ~/Library/Mobile\ Documents/... --splits 3
+# 母艦: 受け口(iCloud Drive)を見張り、届いたら受け取って境界レビューの手前まで進める
+.venv/bin/python pipeline.py field-watch --date 260829 --splits 3
 
 # ここで review_page.html を Artifact として公開し、iPhone で境界を確定する
 .venv/bin/python pipeline.py review-apply --date 260829 --input <ページから取り出したJSON>
@@ -330,9 +330,22 @@ WAV は帰宅後に原本から作る。
 ```
 
 `field-watch` は `field-receive` → `propose` → `review-page` をまとめたもので、
-一つずつ実行してもよい。転送方式(iCloud Drive を監視するか Tailscale で置くか)は
-まだ決めていないが、どちらも「所定のフォルダにファイルが現れる」点は同じなので
-この形なら両方に乗る。
+一つずつ実行してもよい。
+
+**受け口は iCloud Drive。** 既定は次のフォルダで、無ければ作る。
+
+```
+~/Library/Mobile Documents/com~apple~CloudDocs/orchestra-recording-pipeline/inbox/
+```
+
+iPhone(a-Shell)からここへ書き出せば、Mac 側の同じフォルダにファイルが現れる。
+**Mac 側で iCloud Drive を有効にしておくこと**(システム設定 → Apple アカウント →
+iCloud → iCloud Drive)。無効だと `field-watch` はその旨を出して止まる。
+Tailscale で `scp` する運用に変えるときも、置き場をこのフォルダにすればコマンドは
+変わらない(別の場所にするなら `--dir`)。
+
+転送中のファイルを掴まないよう、サイズが `--stable` 秒(既定 15 秒)変わらないことを
+確かめてから受け取る。
 
 プロキシに載せるのは**クリップを避けるための固定ゲイン(-14 dB)だけ**である。
 ラウドネス正規化・コンプ・リミッターは、境界が決まったあとに母艦がブロックごとに
@@ -380,14 +393,20 @@ WAV は帰宅後に原本から作る。
 音源は結合済み WAV でもプロキシ MP3 でもよい。クリップはモノラル 96kbps で、
 6本を埋め込んで約 8MiB(Artifact の上限は 16MiB)。
 
-## チューニングを起点にした境界提案(`--tuning-first`)
+## チューニングを起点にした境界提案(既定)
 
 スコアからの区切り(合奏らしさ + Viterbi)は、休憩の話し声や長い部分練習で崩れる。
-一方**チューニングは合奏の直前に必ず現れ、合奏の中には現れない**。
+260829 では合奏1の提案が 94.6 分になり、合奏1と休憩と合奏2をまたいでいた。一方
+**チューニングは合奏の直前に必ず現れ、合奏の中には現れない**。そこで既定では
+チューニングを起点に区間を組む。
 
 ```bash
-.venv/bin/python pipeline.py propose --date 260829 --splits 3 --tuning-first
+.venv/bin/python pipeline.py propose --date 260829 --splits 3
+.venv/bin/python pipeline.py propose --date 260829 --splits 3 --no-tuning-first  # 従来の方式
 ```
+
+チューニング検出の件数が `--splits` と食い違うときと、そもそも区間を組めないときは、
+自動的に従来の方式へ落ちる。
 
 260829 での結果:
 
@@ -416,8 +435,9 @@ WAV は帰宅後に原本から作る。
 チューニング開始そのものを合奏の開始とし、終了は「次のチューニングの手前で合奏らしさが
 最後に閾値を超えた窓の終わり」とする。
 
-**既定にはしていない。** 検証できたのが 260829 の1日だけだからである。チューニング
-検出の件数が `--splits` と食い違うときは従来の経路に落ちる。
+検証できたのは 260829 の1日だけである(260802 と 260726 の素材は残っていない)。
+それを承知のうえで既定に据えた。次の練習日でもう一度当たるか確認すること。
+外した日は `--no-tuning-first` で従来の方式に戻せる。
 
 ## クラウドアップロード
 
@@ -552,8 +572,8 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `mix` | `--comp-attack` | 100 ms | コンプのアタック |
 | `mix` | `--comp-release` | 1000 ms | コンプのリリース |
 | `mix` | `--comp-knee` | 6 dB | コンプのニー幅 |
-| `propose` | `--tuning-first` | — | チューニングを合奏の開始として区間を組む |
-| `field-watch` | `--dir` | 必須 | プロキシの置き場を見張る |
+| `propose` | `--no-tuning-first` | — | チューニング起点をやめ、スコアからの区切りだけで決める |
+| `field-watch` | `--dir` | iCloud Drive の inbox | プロキシの置き場を見張る |
 | `field-watch` | `--stable` | 15 秒 | サイズがこの秒数変わらなければ書き込み完了とみなす |
 | `field-watch` | `--receive-only` | — | 受け取るだけで propose / review-page を走らせない |
 | `review-page` | `--pre` / `--post` | 45 秒 | 境界の前後に含める長さ |
