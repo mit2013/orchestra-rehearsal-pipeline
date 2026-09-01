@@ -127,10 +127,14 @@ def run_mix(
 ) -> list[Path]:
     trimmed = outdir / "trimmed"
     if blocks is None:
-        from .normalize import block_files
+        from .normalize import block_files, norm_block_files
 
-        raw = block_files(trimmed, list(groups or ("ext", "int")))
+        want = list(groups or ("ext", "int"))
+        raw = block_files(trimmed, want)
         blocks = {k: norm_path(v) for k, v in raw.items()}
+        if not blocks:
+            # 正規化前の中間ファイルが消えていても、_norm.wav があれば動く。
+            blocks = norm_block_files(trimmed, want)
 
     names = sorted({b for (b, _g) in blocks})
     if not names:

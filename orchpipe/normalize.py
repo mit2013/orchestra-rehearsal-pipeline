@@ -79,6 +79,28 @@ def block_files(trimmed: Path, groups: list[str]) -> dict[tuple[str, str], Path]
     return out
 
 
+def norm_block_files(trimmed: Path, groups: list[str]) -> dict[tuple[str, str], Path]:
+    """正規化済みファイル `{NN}_{label}_{group}_norm.wav` から直接ブロックを拾う。
+
+    `block_files` は正規化**前**の `_ext.wav` を見るが、あれは `_norm.wav` を
+    作ったあとは要らない中間ファイルで、容量を空けるために消されることがある。
+    `mix` の実際の入力は `_norm.wav` のほうなので、前段が消えていても動くように
+    こちらから引けるようにしておく。
+    """
+    out: dict[tuple[str, str], Path] = {}
+    if not trimmed.is_dir():
+        return out
+    pattern = re.compile(r"^(?P<block>.+)_(?P<group>" + "|".join(map(re.escape, groups))
+                         + r")" + re.escape(NORM_SUFFIX) + r"\.wav$")
+    for p in sorted(trimmed.iterdir()):
+        if not p.is_file():
+            continue
+        m = pattern.match(p.name)
+        if m:
+            out[(m.group("block"), m.group("group"))] = p
+    return out
+
+
 def norm_path(src: Path) -> Path:
     return src.with_name(src.stem + NORM_SUFFIX + src.suffix)
 
