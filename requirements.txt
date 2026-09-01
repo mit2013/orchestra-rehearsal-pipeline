@@ -1,0 +1,15 @@
+# 本体
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7        # 境界確認用の波形画像
+mutagen>=1.46          # MP3 の ID3 タグ
+pedalboard>=0.9        # ホール残響の畳み込み
+
+# クラウド
+requests>=2.31
+google-api-python-client>=2.100
+google-auth>=2.20
+google-auth-oauthlib>=1.0
+
+# ダイジェスト生成(research.py)でのみ使う。通常編集版だけなら不要。
+# faster-whisper>=1.0
