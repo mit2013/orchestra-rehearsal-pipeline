@@ -33,6 +33,7 @@ from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
 from orchpipe import field as field_mod
 from orchpipe import review_page as review_mod
+from orchpipe import reverb as reverb_mod
 from orchpipe import gdrive_upload as gdrive_mod
 from orchpipe import features as feat
 from orchpipe import ingest as ingest_mod
@@ -262,6 +263,9 @@ def cmd_mix(args) -> None:
         comp_attack_ms=args.comp_attack,
         comp_release_ms=args.comp_release,
         comp_knee_db=args.comp_knee,
+        parallel_db=args.parallel,
+        reverb_mix=args.reverb_mix,
+        reverb_ir=Path(args.reverb_ir) if args.reverb_ir else None,
         force=args.force,
     )
     print()
@@ -649,6 +653,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="コンプのリリース [ms]")
     sp.add_argument("--comp-knee", type=float, default=loud_mod.DEFAULT_COMP_KNEE_DB,
                     help="コンプのニー幅 [dB]")
+    sp.add_argument("--parallel", type=float, default=loud_mod.PARALLEL_MAKEUP_DB,
+                    help="パラレルコンプの makeup [dB]。小さい音だけを持ち上げる。0 で無効")
+    sp.add_argument("--reverb-mix", type=float, default=reverb_mod.DEFAULT_MIX,
+                    help="ホール残響を混ぜる割合 (0〜1)。0 で無効")
+    sp.add_argument("--reverb-ir", default=None,
+                    help="インパルス応答の WAV(既定: IRLive の Hall 3)")
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))

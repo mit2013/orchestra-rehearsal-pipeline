@@ -62,6 +62,27 @@ LIMITER_MARGIN_DB = 0.1
 # パイプラインの素材は 48kHz。オーバーサンプルの倍率をかけて使う。
 DEFAULT_SAMPLE_RATE = 48000
 
+# --- パラレルコンプレッサ(小さい音だけを持ち上げる) -------------------------
+# 通常のコンプは**大きい音を下げる**ので、静かなところは録れたままの小ささで
+# 出ていく。260829 後半 00:31:32 からの 45 秒では、1秒ごとの実効音量が
+# 静音部 -52.7 dBFS / 大音量部 -13.1 dBFS と 39.5 dB 開いていた。スマホの内蔵
+# スピーカーでは前者はまず聴こえない。
+#
+# クラシックの録音では、これをパラレルコンプで解く。信号を2つに分け、片方を
+# ピークで大きく潰れるコンプに通して持ち上げ、直の信号に足し戻す。**大きいところは
+# ほぼ変わらず、小さいところだけが上がる。** 実測(makeup +17 dB):
+#
+#   静音部 -52.7 -> -35.3 dBFS (+17.3 dB) / 大音量部 -13.1 -> -12.5 dBFS (+0.7 dB)
+#
+# Waves の MV2(Low Level +14 dB)を同じ狙いで設定した結果は静 +13.1 / 動 +1.3 で、
+# ほぼ同じかむしろ大音量部への影響が大きかった。**この用途にプラグインは要らない。**
+PARALLEL_MAKEUP_DB = 17.0      # 0 で無効。大きいほど静音部が持ち上がる
+PARALLEL_THRESHOLD_DB = -46.0  # 静音部より下。ここから上を潰して定常に近づける
+PARALLEL_RATIO = 20.0
+PARALLEL_ATTACK_MS = 20.0
+PARALLEL_RELEASE_MS = 400.0
+PARALLEL_KNEE_DB = 8.0
+
 # --- コンプレッサ(緩く。「かかっている」と分からない程度) -------------------
 DEFAULT_COMP_RATIO = 2.0          # 明確に分からない程度
 DEFAULT_COMP_THRESHOLD_OFFSET = 6.0   # しきい値 = 目標ラウドネス + この値 [dB]
@@ -129,6 +150,20 @@ def limiter_filter(
     return f"aresample={sample_rate * oversample},{lim},aresample={sample_rate}"
 
 
+def parallel_graph(makeup_db: float = PARALLEL_MAKEUP_DB) -> str:
+    """パラレルコンプの部分グラフ。入力を受けて、合成後の続きに繋がる形を返す。
+
+    ラベルを使うので**戻り値には `;` が含まれる**。`-af` の単純フィルタ列では
+    使えないため、呼び出し側は `-filter_complex` を使うこと(`measure` は自動で
+    切り替える)。
+    """
+    comp = compressor_filter(PARALLEL_THRESHOLD_DB, PARALLEL_RATIO, PARALLEL_ATTACK_MS,
+                             PARALLEL_RELEASE_MS, PARALLEL_KNEE_DB)
+    return (f"asplit=2[pc_d][pc_c];"
+            f"[pc_c]{comp},volume={makeup_db:.6f}dB[pc_w];"
+            f"[pc_d][pc_w]amix=inputs=2:normalize=0")
+
+
 def master_chain(
     gain_db: float,
     *,
@@ -141,14 +176,20 @@ def master_chain(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     oversample: int = LIMITER_OVERSAMPLE,
     with_limiter: bool = True,
+    parallel_db: float = PARALLEL_MAKEUP_DB,
 ) -> str:
-    """ゲイン -> コンプレッサ -> リミッター のフィルタ列。
+    """ゲイン -> パラレルコンプ -> コンプレッサ -> リミッター のフィルタ列。
+
+    `parallel_db` が 0 より大きいとパラレルコンプが入り、**戻り値にラベルと `;` が
+    含まれる**(`-filter_complex` が要る)。0 にすると従来どおりの単純なフィルタ列。
 
     ラウドネスを測るだけの下見では `oversample=1` にしてよい。リミッターの
     オーバーサンプルは統合ラウドネスをほとんど動かさない一方、処理時間は3倍になる。
     """
-    parts = [f"volume={gain_db:.6f}dB",
-             compressor_filter(threshold_db, ratio, attack_ms, release_ms, knee_db)]
+    head = f"volume={gain_db:.6f}dB"
+    if parallel_db > 0:
+        head = f"{head},{parallel_graph(parallel_db)}"
+    parts = [head, compressor_filter(threshold_db, ratio, attack_ms, release_ms, knee_db)]
     if with_limiter:
         parts.append(limiter_filter(true_peak_db, sample_rate, oversample))
     return ",".join(parts)
@@ -186,10 +227,13 @@ def measure(
     if dur is not None:
         cmd += ["-t", f"{dur:.3f}"]
     cmd += ["-i", str(path)]
-    chain = "ebur128=peak=true:framelog=quiet"
-    if pre_filter:
-        chain = f"{pre_filter},{chain}"
-    cmd += ["-af", chain, "-f", "null", "-"]
+    tail = "ebur128=peak=true:framelog=quiet"
+    chain = f"{pre_filter},{tail}" if pre_filter else tail
+    if ";" in chain:
+        # パラレルコンプのようにラベルを使うチェーンは -af では扱えない。
+        cmd += ["-filter_complex", f"[0:a]{chain}[s]", "-map", "[s]", "-f", "null", "-"]
+    else:
+        cmd += ["-af", chain, "-f", "null", "-"]
     return _run_ebur128(cmd, str(path))
 
 
@@ -222,7 +266,10 @@ def measure_complex(
 # コンプを通すとラウドネスが下がるので、当てて測り直して補正する。残差が
 # これ以下になったら打ち切る。
 GAIN_SETTLE_LU = 0.15
-GAIN_MAX_ITER = 3
+# パラレルコンプが入るとマスターの応答が線形から外れ、3回では収束しきらない
+# ことがある(実測で残差 +0.5 LU が残った)。測定は実時間の 1/280 程度なので
+# 回数を増やす損は小さい。
+GAIN_MAX_ITER = 5
 
 
 def solve_gain(

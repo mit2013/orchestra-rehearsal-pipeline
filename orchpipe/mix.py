@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import reverb as reverb_mod
 from .config import SessionConfig
 from .loudness import (
     LIMITER_OVERSAMPLE,
@@ -34,6 +35,8 @@ from .loudness import (
     DEFAULT_TARGET_LUFS,
     DEFAULT_TRUE_PEAK_DB,
     GAIN_MAX_ITER,
+    PARALLEL_MAKEUP_DB,
+    PARALLEL_THRESHOLD_DB,
     GAIN_SETTLE_LU,
     master_chain,
     measure,
@@ -117,6 +120,9 @@ def run_mix(
     comp_attack_ms: float = DEFAULT_COMP_ATTACK_MS,
     comp_release_ms: float = DEFAULT_COMP_RELEASE_MS,
     comp_knee_db: float = DEFAULT_COMP_KNEE_DB,
+    parallel_db: float = PARALLEL_MAKEUP_DB,
+    reverb_mix: float = reverb_mod.DEFAULT_MIX,
+    reverb_ir: Path | None = None,
     force: bool = False,
 ) -> list[Path]:
     trimmed = outdir / "trimmed"
@@ -145,8 +151,16 @@ def run_mix(
             gain_db, threshold_db=threshold_db, true_peak_db=true_peak_db,
             ratio=comp_ratio, attack_ms=comp_attack_ms, release_ms=comp_release_ms,
             knee_db=comp_knee_db, sample_rate=sample_rate, oversample=oversample,
-            with_limiter=with_limiter,
+            with_limiter=with_limiter, parallel_db=parallel_db,
         )
+
+    if parallel_db > 0:
+        log(f"  パラレルコンプ: makeup {parallel_db:+.0f} dB "
+            f"(しきい値 {PARALLEL_THRESHOLD_DB:+.0f} dBFS / 小さい音だけを持ち上げる)")
+    ir_prepared = None
+    if reverb_mix > 0:
+        ir_prepared = reverb_mod.prepare_ir(reverb_ir or reverb_mod.default_ir(), trimmed)
+        log(f"  残響: {ir_prepared.name} を {reverb_mix*100:.0f}% で混ぜます")
 
     written: list[Path] = []
     record: dict[str, dict] = {}
@@ -160,6 +174,27 @@ def run_mix(
 
         inputs, desc = _block_inputs(block, cfg, blocks)
         premix = _premix_filter(cfg, len(inputs))
+        temps: list[Path] = []
+
+        # 残響はマスターチェーンの手前に置く。あとにすると、足した残響のぶん
+        # ラウドネスとトゥルーピークがずれて、solve_gain の保証が崩れる。
+        if ir_prepared is not None:
+            if len(inputs) > 1:
+                pre = trimmed / f"{block}_premix.wav"
+                cmd = [FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y"]
+                for src in inputs:
+                    cmd += ["-i", str(src)]
+                cmd += ["-filter_complex", premix, "-map", "[m]",
+                        "-c:a", "pcm_f32le", "-rf64", "auto", str(pre)]
+                run(cmd, desc="    合成中...")
+                temps.append(pre)
+            else:
+                pre = inputs[0]
+            verb = trimmed / f"{block}_verb.wav"
+            reverb_mod.apply_reverb(pre, verb, ir_prepared, reverb_mix)
+            temps.append(verb)
+            inputs, premix = [verb], _premix_filter(cfg, 1)
+            desc += f" + 残響 {ir_prepared.stem} {reverb_mix*100:.0f}%"
 
         # 音出し・休憩の話し声が混じる guard 部分は測定から外す(normalize と同じ考え方)。
         # ゲインの適用はブロック全体に対して行う。
@@ -222,6 +257,9 @@ def run_mix(
                 f"天井 {true_peak_db:+.1f} dBTP を超えています"
             )
 
+        for t in temps:
+            t.unlink(missing_ok=True)
+
         record[block] = {
             "source": desc,
             "window": window_desc,
@@ -246,6 +284,9 @@ def run_mix(
             "comp_attack_ms": comp_attack_ms,
             "comp_release_ms": comp_release_ms,
             "comp_knee_db": comp_knee_db,
+            "parallel_makeup_db": parallel_db,
+            "reverb_mix": reverb_mix,
+            "reverb_ir": ir_prepared.name if ir_prepared else None,
         }
         write_json(path, data)
         log(f"マスタリングの測定結果を保存しました: {path.name}")
