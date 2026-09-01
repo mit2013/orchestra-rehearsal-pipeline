@@ -17,7 +17,7 @@ from pathlib import Path
 from .box_client import BoxClient
 from .config import SessionConfig
 from .export import find_mp3_files
-from .util import PipelineError, file_digest, log
+from .util import PipelineError, file_digest, log, read_env
 
 ROOT_FOLDER_ID = "0"
 # 共有リンクのパスワードは `{concert_date}{接尾辞}`。**接尾辞はリポジトリに置かない。**
@@ -26,8 +26,15 @@ ROOT_FOLDER_ID = "0"
 PASSWORD_SUFFIX_ENV = "BOX_PASSWORD_SUFFIX"
 
 
-def password_suffix() -> str:
+def password_suffix(root: Path | None = None) -> str:
+    """接尾辞を `.env`(なければ環境変数)から読む。
+
+    `.env` は `os.environ` には流し込まれない実装なので、`util.read_env` から
+    直接引く。環境変数を先に見るのは、CI などで `.env` を置かずに渡せるようにするため。
+    """
     suffix = os.environ.get(PASSWORD_SUFFIX_ENV, "")
+    if not suffix:
+        suffix = read_env(root or Path.cwd()).get(PASSWORD_SUFFIX_ENV, "")
     if not suffix:
         raise PipelineError(
             f"{PASSWORD_SUFFIX_ENV} が設定されていません。\n"
@@ -38,8 +45,8 @@ def password_suffix() -> str:
     return suffix
 
 
-def build_password(concert_date: str) -> str:
-    """パスワードは `{concert_date}{接尾辞}`。接尾辞は環境変数から読む。"""
+def build_password(concert_date: str, root: Path | None = None) -> str:
+    """パスワードは `{concert_date}{接尾辞}`。接尾辞は `.env` から読む。"""
     if not concert_date:
         raise PipelineError(
             "concert_date が空です。パスワードを生成できないため中止します。\n"
@@ -50,7 +57,7 @@ def build_password(concert_date: str) -> str:
         raise PipelineError(
             f"concert_date は yyyymmdd 形式の8桁である必要があります(実際: {concert_date!r})"
         )
-    return f"{concert_date}{password_suffix()}"
+    return f"{concert_date}{password_suffix(root)}"
 
 
 def resolve_parent_folder_id(raw: str) -> str:
@@ -82,7 +89,7 @@ def run_box_upload(
     auth_timeout: float = 300.0,
 ) -> dict:
     # パスワードと親フォルダは、通信を始める前に検証しておく。
-    password = build_password(cfg.concert_date)
+    password = build_password(cfg.concert_date, root)
     parent_id = resolve_parent_folder_id(cfg.box_parent_folder_id)
     files = mp3_files(outdir)
 

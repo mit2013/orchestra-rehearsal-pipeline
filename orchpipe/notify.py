@@ -46,7 +46,7 @@ class Links:
 
 def fetch_box_link(root: Path, date: str, cfg: SessionConfig) -> tuple[str, str]:
     """Box の {date} フォルダの共有リンクを取得し、パスワードはローカル計算する。"""
-    password = build_password(cfg.concert_date)
+    password = build_password(cfg.concert_date, root)
     parent_id = resolve_parent_folder_id(cfg.box_parent_folder_id)
     client = BoxClient.connect(root)
     folder = client.find_folder(parent_id, date)
