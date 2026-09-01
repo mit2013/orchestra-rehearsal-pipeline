@@ -35,8 +35,11 @@ from .loudness import (
     DEFAULT_TARGET_LUFS,
     DEFAULT_TRUE_PEAK_DB,
     GAIN_MAX_ITER,
+    NOISE_FLOOR_BELOW_TARGET_DB,
     PARALLEL_MAKEUP_DB,
     PARALLEL_THRESHOLD_DB,
+    limit_parallel_makeup,
+    noise_floor,
     GAIN_SETTLE_LU,
     master_chain,
     measure,
@@ -121,6 +124,7 @@ def run_mix(
     comp_release_ms: float = DEFAULT_COMP_RELEASE_MS,
     comp_knee_db: float = DEFAULT_COMP_KNEE_DB,
     parallel_db: float = PARALLEL_MAKEUP_DB,
+    noise_ceiling_db: float | None = None,
     reverb_mix: float = reverb_mod.DEFAULT_MIX,
     reverb_ir: Path | None = None,
     force: bool = False,
@@ -149,18 +153,22 @@ def run_mix(
         f"アタック {comp_attack_ms:g}ms リリース {comp_release_ms:g}ms "
         f"ニー {comp_knee_db:g}dB")
 
+    ceiling = (noise_ceiling_db if noise_ceiling_db is not None
+               else target_lufs - NOISE_FLOOR_BELOW_TARGET_DB)
+
     def chain(gain_db: float, sample_rate: int, *, oversample: int = LIMITER_OVERSAMPLE,
-              with_limiter: bool = True) -> str:
+              with_limiter: bool = True, makeup_db: float = 0.0) -> str:
         return master_chain(
             gain_db, threshold_db=threshold_db, true_peak_db=true_peak_db,
             ratio=comp_ratio, attack_ms=comp_attack_ms, release_ms=comp_release_ms,
             knee_db=comp_knee_db, sample_rate=sample_rate, oversample=oversample,
-            with_limiter=with_limiter, parallel_db=parallel_db,
+            with_limiter=with_limiter, parallel_db=makeup_db,
         )
 
     if parallel_db > 0:
-        log(f"  パラレルコンプ: makeup {parallel_db:+.0f} dB "
+        log(f"  パラレルコンプ: makeup 上限 {parallel_db:+.0f} dB "
             f"(しきい値 {PARALLEL_THRESHOLD_DB:+.0f} dBFS / 小さい音だけを持ち上げる)")
+        log(f"    暗騒音の天井 {ceiling:+.0f} dBFS を超えないところまで自動で抑えます")
     ir_prepared = None
     if reverb_mix > 0:
         ir_prepared = reverb_mod.prepare_ir(reverb_ir or reverb_mod.default_ir(), trimmed)
@@ -214,11 +222,19 @@ def run_mix(
         gain = target_lufs - pre.integrated
         log(f"    合成後 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
+        # 1-b. 暗騒音を測り、持ち上げ量の上限をこのブロック向けに決める。
+        makeup = parallel_db
+        floor = float("-inf")
+        if parallel_db > 0:
+            floor = noise_floor(inputs[0])
+            makeup, why = limit_parallel_makeup(floor, gain, parallel_db, ceiling)
+            log(f"    {why}")
+
         # 2. コンプを通すとラウドネスが下がるので、実際に通して測り直して補正する。
         #    下見なのでリミッターのオーバーサンプルは省く(統合ラウドネスは変わらない)。
         def after_master(g: float):
             return measure_complex(
-                inputs, f"{premix};[m]{chain(g, sr, oversample=1)}[out]", "out", trim=trim)
+                inputs, f"{premix};[m]{chain(g, sr, oversample=1, makeup_db=makeup)}[out]", "out", trim=trim)
 
         def report(g: float, res, resid: float) -> None:
             log(f"    マスター通過後 {res.integrated:+.1f} LUFS (残差 {resid:+.2f} LU)")
@@ -232,7 +248,7 @@ def run_mix(
         for src in inputs:
             cmd += ["-i", str(src)]
         cmd += [
-            "-filter_complex", f"{premix};[m]{chain(gain, sr)}[out]",
+            "-filter_complex", f"{premix};[m]{chain(gain, sr, makeup_db=makeup)}[out]",
             "-map", "[out]",
             "-c:a", "pcm_f32le", "-rf64", "auto",
             str(dst),
@@ -243,7 +259,7 @@ def run_mix(
         after = measure(dst, start, span)
         whole = measure(dst)
         pre_limit = measure_complex(
-            inputs, f"{premix};[m]{chain(gain, sr, with_limiter=False)}[out]", "out",
+            inputs, f"{premix};[m]{chain(gain, sr, with_limiter=False, makeup_db=makeup)}[out]", "out",
             trim=trim)
         gr = max(0.0, pre_limit.true_peak - true_peak_db)
         log(f"    結果 {after.describe()} / 全体では {whole.describe()}")
@@ -271,6 +287,8 @@ def run_mix(
             "gain_db": round(gain, 2),
             "after": after.to_json(),
             "after_whole": whole.to_json(),
+            "noise_floor_db": None if floor == float("-inf") else round(floor, 2),
+            "parallel_makeup_db": round(makeup, 2),
             "pre_limiter_true_peak_db": round(pre_limit.true_peak, 2),
             "limiter_max_gr_db": round(gr, 2),
         }
@@ -288,7 +306,8 @@ def run_mix(
             "comp_attack_ms": comp_attack_ms,
             "comp_release_ms": comp_release_ms,
             "comp_knee_db": comp_knee_db,
-            "parallel_makeup_db": parallel_db,
+            "parallel_makeup_max_db": parallel_db,
+            "noise_ceiling_db": ceiling,
             "reverb_mix": reverb_mix,
             "reverb_ir": ir_prepared.name if ir_prepared else None,
         }

@@ -76,7 +76,20 @@ DEFAULT_SAMPLE_RATE = 48000
 #
 # Waves の MV2(Low Level +14 dB)を同じ狙いで設定した結果は静 +13.1 / 動 +1.3 で、
 # ほぼ同じかむしろ大音量部への影響が大きかった。**この用途にプラグインは要らない。**
-PARALLEL_MAKEUP_DB = 17.0      # 0 で無効。大きいほど静音部が持ち上がる
+PARALLEL_MAKEUP_DB = 17.0      # 0 で無効。大きいほど静音部が持ち上がる。上限として使う
+#
+# ただし **持ち上げるとノイズフロアも同じだけ上がる。** 260829 の外部マイクは
+# 良いので気にならなかったが、S/N の悪い日には空調音が目立つ。しかもノイズフロアは
+# ブロックによって大きく違う(260829 の実測、0.4秒窓の下位0.1%):
+#
+#   合奏1 -51.5 dBFS / 合奏2 -60.9 dBFS / 合奏3 -57.9 dBFS   ― 同じ日で 9.4 dB 差
+#
+# そこで固定値を上限とし、**仕上がりのノイズフロアが目標ラウドネスから
+# これ以上近づかないところまで**に持ち上げ量を自動で抑える。会場やマイクが
+# 変わった日に自動で加減が効く。
+NOISE_FLOOR_BELOW_TARGET_DB = 14.0   # 目標 -20 LUFS なら天井は -34 dBFS
+NOISE_FLOOR_WIN_S = 0.4              # 短い窓のほうが本当の暗騒音に近い
+NOISE_FLOOR_PERCENTILE = 0.1
 PARALLEL_THRESHOLD_DB = -46.0  # 静音部より下。ここから上を潰して定常に近づける
 PARALLEL_RATIO = 20.0
 PARALLEL_ATTACK_MS = 20.0
@@ -193,6 +206,60 @@ def master_chain(
     if with_limiter:
         parts.append(limiter_filter(true_peak_db, sample_rate, oversample))
     return ",".join(parts)
+
+
+def noise_floor(
+    path: Path,
+    win_s: float = NOISE_FLOOR_WIN_S,
+    percentile: float = NOISE_FLOOR_PERCENTILE,
+    sr: int = 16000,
+) -> float:
+    """暗騒音の水準[dBFS]。短い窓の実効音量の下位パーセンタイルで測る。
+
+    「いちばん静かな瞬間がどれくらいか」を知りたいので、ラウドネス(K特性)ではなく
+    素の RMS を使う。窓を短くするほど本当の無音に近づくが、短すぎると波形の谷を
+    拾うので 0.4 秒にしてある。
+    """
+    import numpy as np
+
+    proc = subprocess.run(
+        [FFMPEG, "-v", "error", "-i", str(path), "-f", "f32le", "-acodec", "pcm_f32le",
+         "-ac", "1", "-ar", str(sr), "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise PipelineError(f"暗騒音の測定に失敗: {path.name}")
+    x = np.frombuffer(proc.stdout, dtype="<f4").astype(np.float64)
+    n = max(1, int(sr * win_s))
+    if len(x) < n * 10:
+        return float("-inf")
+    frames = np.array([20 * np.log10(np.sqrt((x[i:i + n] ** 2).mean()) + 1e-12)
+                       for i in range(0, len(x) - n, n)])
+    return float(np.percentile(frames, percentile))
+
+
+def limit_parallel_makeup(
+    floor_db: float,
+    gain_db: float,
+    max_makeup_db: float,
+    ceiling_db: float,
+) -> tuple[float, str]:
+    """暗騒音が天井を超えないところまで持ち上げ量を抑える。
+
+    パラレルの経路は、しきい値より下ではほぼ素通しに makeup を足した形になるので、
+    **仕上がりの暗騒音 ≒ 元の暗騒音 + ゲイン + makeup** とみなせる(260829 の実測で
+    makeup +17 に対し下位1%が +17.7 dB 動いた)。
+    """
+    if max_makeup_db <= 0:
+        return 0.0, "パラレルコンプ無効"
+    after = floor_db + gain_db
+    allowed = ceiling_db - after
+    if allowed >= max_makeup_db:
+        return max_makeup_db, (f"暗騒音 {floor_db:+.1f} dBFS。上限 {max_makeup_db:+.0f} dB "
+                               f"のままで天井 {ceiling_db:+.0f} dBFS に収まる")
+    makeup = max(0.0, allowed)
+    return makeup, (f"暗騒音 {floor_db:+.1f} dBFS と高いため {max_makeup_db:+.0f} -> "
+                    f"{makeup:+.1f} dB に抑制(天井 {ceiling_db:+.0f} dBFS)")
 
 
 def _run_ebur128(cmd: list[str], what: str) -> Loudness:

@@ -264,6 +264,7 @@ def cmd_mix(args) -> None:
         comp_release_ms=args.comp_release,
         comp_knee_db=args.comp_knee,
         parallel_db=args.parallel,
+        noise_ceiling_db=args.noise_ceiling,
         reverb_mix=args.reverb_mix,
         reverb_ir=Path(args.reverb_ir) if args.reverb_ir else None,
         force=args.force,
@@ -655,6 +656,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="コンプのニー幅 [dB]")
     sp.add_argument("--parallel", type=float, default=loud_mod.PARALLEL_MAKEUP_DB,
                     help="パラレルコンプの makeup [dB]。小さい音だけを持ち上げる。0 で無効")
+    sp.add_argument("--noise-ceiling", type=float, default=None,
+                    help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
+                         f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")
     sp.add_argument("--reverb-mix", type=float, default=reverb_mod.DEFAULT_MIX,
                     help="ホール残響を混ぜる割合 (0〜1)。0 で無効")
     sp.add_argument("--reverb-ir", default=None,
