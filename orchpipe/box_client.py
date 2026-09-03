@@ -397,6 +397,39 @@ class BoxClient:
     def upload(self, path: Path, folder_id: str, existing_file_id: str | None = None) -> dict:
         return self.upload_chunked(path, folder_id, existing_file_id)
 
+    # -- ダウンロード ------------------------------------------------------
+
+    def download(self, file_id: str, dst: Path, on_progress=None) -> Path:
+        """ファイルを `dst` へ落とす。数百MBを想定してストリームで受ける。
+
+        途中で切れたものを掴まないよう、`.part` に書いてから名前を付け替える。
+        """
+        tmp = dst.with_suffix(dst.suffix + ".part")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        resp = self.request("GET", f"{API_BASE}/files/{file_id}/content", stream=True)
+        if resp.status_code != 200:
+            raise PipelineError(
+                f"ファイル {file_id} のダウンロードに失敗しました "
+                f"({resp.status_code}): {resp.text[:300]}"
+            )
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        with tmp.open("wb") as fh:
+            for chunk in resp.iter_content(chunk_size=1 << 20):
+                if not chunk:
+                    continue
+                fh.write(chunk)
+                done += len(chunk)
+                if on_progress:
+                    on_progress(done, total)
+        if total and done != total:
+            tmp.unlink(missing_ok=True)
+            raise PipelineError(
+                f"ダウンロードが途中で終わりました({done} / {total} バイト)"
+            )
+        tmp.replace(dst)
+        return dst
+
     # -- 共有リンク --------------------------------------------------------
 
     def set_folder_shared_link(
