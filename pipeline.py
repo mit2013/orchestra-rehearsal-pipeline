@@ -442,15 +442,34 @@ def cmd_review_apply(args) -> None:
 
 
 def cmd_field_watch(args) -> None:
-    """所定のフォルダにプロキシが届くのを待ち、境界レビューの手前まで進める。"""
+    """受け口にプロキシが届くのを待ち、境界レビューの手前まで進める。"""
     outdir = out_dir(args.root, args.date)
-    watch_dir = field_mod.ensure_inbox(Path(args.dir) if args.dir else None)
-    log(f"受け口: {watch_dir}")
-    src = field_mod.wait_for_proxy(
-        watch_dir, pattern=args.pattern, poll_s=args.poll,
-        stable_s=args.stable, timeout_s=args.timeout,
-    )
-    field_mod.receive_proxy(src, outdir, args.date, group=args.group, move=args.move)
+    via = "dir" if args.dir else args.via
+
+    if via == "drive":
+        from orchpipe.gdrive_client import DriveClient
+
+        client = DriveClient.connect(args.root)
+        folder = field_mod.ensure_drive_inbox(client)
+        log(f"受け口: Google Drive の orchestra-recording-pipeline/"
+            f"{field_mod.DRIVE_INBOX_NAME}(id={folder['id']})")
+        outdir.mkdir(parents=True, exist_ok=True)
+        src = field_mod.wait_for_proxy_drive(
+            client, folder["id"], outdir, pattern=args.pattern,
+            poll_s=args.poll, stable_s=args.stable, timeout_s=args.timeout,
+        )
+        # 落としてきたものを動かす。コピーを二重に残さない。
+        move = True
+    else:
+        watch_dir = field_mod.ensure_inbox(Path(args.dir) if args.dir else None)
+        log(f"受け口: {watch_dir}")
+        src = field_mod.wait_for_proxy(
+            watch_dir, pattern=args.pattern, poll_s=args.poll,
+            stable_s=args.stable, timeout_s=args.timeout,
+        )
+        move = args.move
+
+    field_mod.receive_proxy(src, outdir, args.date, group=args.group, move=move)
     config_mod.ensure(outdir, args.root)
     if args.receive_only:
         print(f"\n受け取りました: {field_mod.proxy_path(outdir, args.group)}")
@@ -711,8 +730,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_field_receive)
 
     sp = common(sub.add_parser("field-watch", help="プロキシが届くのを待ち、境界レビューの手前まで進める"))
+    sp.add_argument("--via", choices=("drive", "dir"), default="drive",
+                    help="受け口の種類(既定: drive = Google Drive の "
+                         "orchestra-recording-pipeline/inbox)")
     sp.add_argument("--dir", default=None,
-                    help="見張るフォルダ(既定: iCloud Drive の "
+                    help="ローカルのフォルダを見張る(指定すると --via dir になる。"
+                         "省略時の既定は iCloud Drive の "
                          "orchestra-recording-pipeline/inbox)")
     sp.add_argument("--pattern", default="*.mp3")
     sp.add_argument("--group", default="ext")

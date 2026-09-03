@@ -406,9 +406,14 @@ def field_script(
 WATCH_POLL_S = 5.0
 WATCH_STABLE_S = 15.0
 
-# 受け口は iCloud Drive にした。iPhone(a-Shell)からこのフォルダへ書き出せば、
-# Mac 側で同じフォルダにファイルが現れる。Tailscale で scp する場合も、置き場を
-# ここにすればコマンドは変わらない。
+# 受け口は Google Drive にした。iPhone の Drive アプリからこのフォルダへ
+# アップロードすれば、母艦が API で拾う。iCloud Drive やローカルフォルダを
+# 使いたい場合は --via dir に切り替える(下の `ensure_inbox` 以降)。
+#
+# Drive を選んだ理由は二つある。配布経路で既に使っていて資格情報が生きていること、
+# そして iCloud Drive と違って「Mac 側の同期が有効かどうか」に依存しないこと。
+DRIVE_INBOX_NAME = "inbox"
+
 ICLOUD_ROOT = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
 INBOX_NAME = "orchestra-recording-pipeline/inbox"
 
@@ -418,17 +423,120 @@ def default_inbox() -> Path:
 
 
 def ensure_inbox(path: Path | None = None) -> Path:
-    """受け口のフォルダを用意する。iCloud Drive が無効なら理由を添えて止める。"""
+    """ローカル受け口のフォルダを用意する。iCloud Drive が無効なら理由を添えて止める。"""
     dst = path or default_inbox()
     if path is None and not ICLOUD_ROOT.is_dir():
         raise PipelineError(
             f"iCloud Drive が見つかりません({ICLOUD_ROOT})。\n"
             "  Mac の システム設定 → Apple アカウント → iCloud → iCloud Drive を"
             "オンにしてください。\n"
-            "  別の場所を使う場合は --dir で指定してください。"
+            "  Google Drive を使う場合は --via drive、別の場所なら --dir を指定してください。"
         )
     dst.mkdir(parents=True, exist_ok=True)
     return dst
+
+
+# --- 受け口: Google Drive ----------------------------------------------------
+
+def ensure_drive_inbox(client) -> dict:
+    """Drive 側の受け口フォルダを用意して返す。
+
+    配布に使っているルートフォルダ(`orchestra-recording-pipeline`)の直下に
+    `inbox` を作る。日付フォルダと並ぶので、iPhone からも迷わず選べる。
+    """
+    from .gdrive_client import ROOT_FOLDER_NAME
+    from .gdrive_upload import ensure_root_folder
+
+    parent, _, _ = ensure_root_folder(client)
+    folder, created = client.ensure_folder(DRIVE_INBOX_NAME, parent["id"])
+    if created:
+        log(f"Drive に受け口フォルダを作りました: "
+            f"{ROOT_FOLDER_NAME}/{DRIVE_INBOX_NAME}")
+    return folder
+
+
+def _drive_matches(client, folder_id: str, pattern: str, since: float | None) -> list[dict]:
+    """受け口フォルダの中から、パターンに合う音声ファイルを新しい順に返す。"""
+    import datetime
+    import fnmatch
+
+    out = []
+    for f in client.list_children(folder_id, fields_extra="modifiedTime"):
+        if f.get("mimeType", "").endswith("folder"):
+            continue
+        if not fnmatch.fnmatch(f["name"], pattern):
+            continue
+        mtime = None
+        raw = f.get("modifiedTime")
+        if raw:
+            try:
+                mtime = datetime.datetime.fromisoformat(
+                    raw.replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                mtime = None
+        if since is not None and mtime is not None and mtime < since:
+            continue
+        f["_mtime"] = mtime or 0.0
+        out.append(f)
+    return sorted(out, key=lambda x: x["_mtime"], reverse=True)
+
+
+def wait_for_proxy_drive(
+    client,
+    folder_id: str,
+    dst_dir: Path,
+    pattern: str = "*.mp3",
+    since: float | None = None,
+    poll_s: float = None,
+    stable_s: float = None,
+    timeout_s: float | None = None,
+) -> Path:
+    """Drive の受け口にプロキシが現れるのを待ち、落として返す。
+
+    ローカルフォルダ版と同じく、**サイズが `stable_s` 秒変わらないこと**を
+    確認してから落とす。Drive のアップロードは完了時にしか一覧へ出ないのが
+    普通だが、大きいファイルで途中の状態が見えることがあるための保険である。
+    """
+    import time
+
+    poll_s = WATCH_POLL_S if poll_s is None else poll_s
+    stable_s = WATCH_STABLE_S if stable_s is None else stable_s
+    started = time.time()
+    since = started if since is None else since
+    log(f"Drive の受け口を見張ります(pattern={pattern} / {poll_s:.0f} 秒ごと / "
+        f"{stable_s:.0f} 秒サイズが変わらなければ受け取り)")
+
+    seen: dict[str, tuple[int, float]] = {}
+    while True:
+        for f in _drive_matches(client, folder_id, pattern, since):
+            size = int(f.get("size") or 0)
+            prev = seen.get(f["id"])
+            if prev is None:
+                log(f"  見つけました: {f['name']}  {size / 2**20:.0f} MiB"
+                    f"(アップロード完了を待ちます)")
+                seen[f["id"]] = (size, time.time())
+            elif size != prev[0]:
+                seen[f["id"]] = (size, time.time())
+            elif time.time() - prev[1] >= stable_s:
+                dst = dst_dir / f["name"]
+                log(f"  受け取り: {f['name']}  {size / 2**20:.0f} MiB → {dst}")
+                last = [-1]
+
+                def _progress(frac: float) -> None:
+                    pct = int(frac * 100)
+                    if pct >= last[0] + 10:
+                        last[0] = pct
+                        log(f"    ダウンロード {pct}%")
+
+                client.download(f["id"], dst, on_progress=_progress)
+                return dst
+        if timeout_s is not None and time.time() - started > timeout_s:
+            raise PipelineError(
+                f"{timeout_s:.0f} 秒待ちましたが Drive の受け口に "
+                f"{pattern} が現れませんでした"
+            )
+        time.sleep(poll_s)
 
 
 def wait_for_proxy(

@@ -24,7 +24,14 @@ from pathlib import Path
 
 from .util import PipelineError, log, require_env
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# drive.file はこのアプリが作ったファイルしか見えない。配布(アップロード)には
+# それで足りるが、現場経路の受け口では **iPhone の Drive アプリが置いたファイル**を
+# 読む必要がある。それは「このアプリが作ったもの」ではないので drive.file では
+# 一覧にも出てこない。読み取り専用の drive.readonly を足してある。
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
 TOKENS_NAME = ".google_tokens.json"
 ENV_NAME = ".env"
 
@@ -37,6 +44,7 @@ LEGACY_ROOT_NAME = "練習録音"
 # 1.8GB 級の WAV を上げるので、必ず再開可能アップロードを使う。
 # 回線が切れたときに捨てる量が減るよう、チャンクは控えめにする。
 UPLOAD_CHUNK = 16 * 1024 * 1024
+DOWNLOAD_CHUNK = 16 * 1024 * 1024
 MAX_UPLOAD_RETRIES = 8
 
 # 数分かかる転送では一時的な切断が普通に起こる。ここに挙げたものは再開して続行する。
@@ -61,6 +69,17 @@ def _save_credentials(path: Path, creds) -> None:
     os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
+def _saved_scopes_cover(token_path: Path, needed: list[str]) -> bool:
+    """保存済みトークンが `needed` を満たしているか、ファイルの scopes で判定する。"""
+    import json
+
+    try:
+        saved = set(json.loads(token_path.read_text(encoding="utf-8")).get("scopes") or [])
+    except Exception:
+        return False
+    return set(needed) <= saved
+
+
 def get_credentials(root: Path, auth_timeout: float | None = None):
     """保存済みトークンを使う。無効なら更新、それも無理なら初回認証を行う。"""
     from google.auth.transport.requests import Request
@@ -77,6 +96,14 @@ def get_credentials(root: Path, auth_timeout: float | None = None):
         except Exception as e:
             log(f"警告: {TOKENS_NAME} を読めません({e})。再認証します。")
             creds = None
+
+    if creds is not None and not _saved_scopes_cover(token_path, SCOPES):
+        # `Credentials.from_authorized_user_file` は渡した SCOPES をそのまま
+        # 持たせるので、`creds.has_scopes()` は「保存済みトークンが実際に持つ
+        # 権限」を見ていない。ファイルの scopes を直接見る必要がある。
+        # 足りないまま進めると読み取り系が 403 で落ちる。
+        log("必要な権限が増えています。認証をやり直します。")
+        creds = None
 
     if creds and creds.valid:
         return creds
@@ -166,14 +193,17 @@ class DriveClient:
         )
         return created, True
 
-    def list_children(self, parent_id: str) -> list[dict]:
+    def list_children(self, parent_id: str, fields_extra: str = "") -> list[dict]:
+        base = "id,name,mimeType,size"
+        if fields_extra:
+            base = f"{base},{fields_extra}"
         out, token = [], None
         while True:
             resp = (
                 self.service.files()
                 .list(
                     q=f"'{parent_id}' in parents and trashed = false",
-                    fields="nextPageToken, files(id,name,mimeType,size)",
+                    fields=f"nextPageToken, files({base})",
                     pageSize=200,
                     pageToken=token,
                 )
@@ -258,6 +288,28 @@ class DriveClient:
                 on_progress(status.progress())
         response["_replaced"] = bool(existing)
         return response
+
+    # -- ダウンロード ------------------------------------------------------
+
+    def download(self, file_id: str, dst: Path, on_progress=None) -> Path:
+        """ファイルを `dst` へ落とす。数百MBを想定してチャンクで受ける。
+
+        途中で切れたものを掴まないよう、`.part` に書いてから名前を付け替える。
+        """
+        from googleapiclient.http import MediaIoBaseDownload
+
+        tmp = dst.with_suffix(dst.suffix + ".part")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        request = self.service.files().get_media(fileId=file_id)
+        with tmp.open("wb") as fh:
+            downloader = MediaIoBaseDownload(fh, request, chunksize=DOWNLOAD_CHUNK)
+            done = False
+            while not done:
+                status, done = downloader.next_chunk(num_retries=3)
+                if status and on_progress:
+                    on_progress(status.progress())
+        tmp.replace(dst)
+        return dst
 
     # -- 共有 --------------------------------------------------------------
 
