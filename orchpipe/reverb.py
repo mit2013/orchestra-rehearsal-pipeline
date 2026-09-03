@@ -39,9 +39,10 @@ bits/sample に 23 という無効な値が入っている)。`read_wir` で元�
 - **エネルギーを 1 に正規化する。** ホールごとにピークが 0.2〜4476 とばらばらなので、
   そのままでは `--reverb-mix` の意味がホームごとに変わってしまう。
 
-`assets/ir/hall.wav` を置くとそちらが優先される。Waves を消す予定があるなら、
-そこへ書き出しておくこと(`pipeline.py` の `--reverb-ir` でも直接指定できる)。
-なおこのライブラリは Waves のライセンス品なので、**公開リポジトリには同梱できない**。
+Waves のライブラリはライセンス品なので**公開リポジトリには同梱できない**。
+入っていない環境では `assets/ir/hall.wav`(`tools/make_fallback_ir.py` が作る
+合成 IR)に落ちる。これは代替であって上書きではないので、実測ホールがあれば
+そちらが勝つ。別のものを使いたいときは `--reverb-ir` で明示する。
 """
 
 from __future__ import annotations
@@ -85,13 +86,19 @@ def hall_ir(name: str = DEFAULT_HALL) -> Path | None:
 
 
 def default_ir() -> Path:
-    """使うインパルス応答。リポジトリ内に置いてあればそちらを優先する。"""
-    if REPO_IR.exists():
-        return REPO_IR
+    """使うインパルス応答。
+
+    実測ホールがあればそれを使い、無ければリポジトリ同梱の合成 IR に落ちる。
+    同梱 IR は**代替であって上書きではない**ので、実測ホールより優先しない。
+    別のものを使いたいときは `--reverb-ir` で明示する。
+    """
     hall = hall_ir()
     if hall is not None:
         return hall
-    return WAVES_IR_DIR / LEGACY_IR_NAME
+    legacy = WAVES_IR_DIR / LEGACY_IR_NAME
+    if legacy.exists():
+        return legacy
+    return REPO_IR
 
 
 def read_wir(path: Path):
