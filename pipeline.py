@@ -681,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reverb-mix", type=float, default=reverb_mod.DEFAULT_MIX,
                     help="ホール残響を混ぜる割合 (0〜1)。0 で無効")
     sp.add_argument("--reverb-ir", default=None,
-                    help="インパルス応答の WAV(既定: IRLive の Hall 3)")
+                    help="インパルス応答(既定: Birmingham Symphony Hall。.wir も可)")
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
