@@ -14,7 +14,7 @@
 
 いずれも `orchpipe/research/states2.py` の分類と `digest.py` の範囲決めに手を入れる。
 チューニング検出そのものの欠陥は別件で、
-`orchestra_recording_pipeline_tuning_detection_fix.md` を参照。
+`tuning-detection.md` を参照。
 
 ## 1. ブランチ
 

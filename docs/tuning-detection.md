@@ -7,12 +7,12 @@
 うしろ**に置かれ、チューニングと演奏の頭を切り落とした状態で配布してしまった。
 
 この指示書はチューニング検出そのものを直す。ダイジェスト側の扱いは
-`orchestra_recording_pipeline_digest_percussion.md` を参照のこと。
+`digest-percussion.md` を参照のこと。
 
 ## 1. ブランチ
 
 `main` から `feature/audio-quality` を作成する。**ラウドネス正規化
-(`orchestra_recording_pipeline_loudness.md`)と同じブランチで進める。** 触るファイルが
+(`loudness.md`)と同じブランチで進める。** 触るファイルが
 重ならず(こちらは `tuning.py` と `segment.py`、あちらは `normalize.py` と `mix.py`)、
 どちらも配布する音そのものを変えるため、まとめれば音源の再生成と試聴が1回で済む。
 合否の見方は別物なので、まとめても切り分けられる。
@@ -153,7 +153,7 @@ A・E・C# は A dur の三和音そのものであり、オーケストラの�
 
 - **既に配布済みの 260726・260802・260829 の再生成・再アップロード・再通知。**
   実装と検証が終わった時点で報告し、再配布するかどうかは人間の判断を仰ぐこと。
-- ダイジェスト側の扱い(`orchestra_recording_pipeline_digest_percussion.md`)。
+- ダイジェスト側の扱い(`digest-percussion.md`)。
 
 ## 7. 完了後の報告
 
