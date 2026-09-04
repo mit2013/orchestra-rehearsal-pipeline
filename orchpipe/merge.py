@@ -32,6 +32,10 @@ JOIN_MAPS = {
     "swapped": "join=inputs=2:channel_layout=stereo:map=0.0-FR|1.0-FL",
 }
 
+# 既にステレオで録れている系統(F3 のステレオ1ファイルモード、M4 の内蔵マイク)の
+# 左右を入れ替える。JOIN_MAPS の "swapped" と同じ結果になる。
+SWAP_STEREO = "pan=stereo|c0=c1|c1=c0"
+
 
 def _concat_filter(labels: list[str]) -> str:
     return "".join(f"[{l}]" for l in labels) + f"concat=n={len(labels)}:v=0:a=1[out]"
@@ -53,6 +57,11 @@ def build_group_cmd(
             a, b = 2 * i, 2 * i + 1
             lbl = f"s{i}"
             chains.append(f"[{a}:a][{b}:a]{JOIN_MAPS[lr_map]}[{lbl}]")
+            labels.append(lbl)
+        elif lr_map == "swapped":
+            # 既にステレオのファイルなので join ではなく pan で入れ替える。
+            lbl = f"s{i}"
+            chains.append(f"[{i}:a]{SWAP_STEREO}[{lbl}]")
             labels.append(lbl)
         else:
             labels.append(f"{i}:a")
@@ -166,14 +175,16 @@ def run_merge(
             log(f"スキップ(対象外): {dst.name}")
             continue
 
-        # 左右の割り当てが関わるのは、2本のモノラルを組む系統だけ。
-        lr_map = cfg.ext_lr_map if len(tracks) == 2 else "normal"
+        # 左右の割り当ては外部マイクの系統にだけ効く。内蔵マイク(M4 の TrMic)は
+        # 機体に固定されているので入れ替えない。F3 のステレオ1ファイルは 1 トラック
+        # だが ext なので対象になる。
+        lr_map = cfg.ext_lr_map if group == "ext" else "normal"
 
         if dst.exists() and not force:
             log(f"スキップ(既存): {dst.name} — 作り直すには --force")
         else:
             desc = f"{group} 系統を結合 ({'+'.join(tracks)}"
-            if len(tracks) == 2:
+            if group == "ext":
                 desc += f", ext_lr_map={lr_map}"
             desc += f") x {len(takes)} TAKE ..."
             run(build_group_cmd(takes, tracks, dst, lr_map), desc=desc)

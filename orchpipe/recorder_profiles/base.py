@@ -57,6 +57,14 @@ class RecorderProfile:
         """
         raise NotImplementedError
 
+    def relative_files(self, date: str, number: int) -> dict[str, str]:
+        """TAKE 番号から、コピー先で期待される相対パスを返す。
+
+        現場前処理では母艦に原本が無い状態でスクリプトを組み立てるので、実ファイルを
+        見ずにパスを作れる必要がある。`discover` と同じ命名規則をここにも書く。
+        """
+        raise NotImplementedError
+
     # -- 以下は共通のヘルパ ------------------------------------------------
 
     @property

@@ -57,3 +57,8 @@ class ZoomM4Profile(RecorderProfile):
         if not takes:
             raise PipelineError(f"{root_dir} に {date}_XXX.TAKE フォルダが見つかりません")
         return takes
+
+    def relative_files(self, date: str, number: int) -> dict[str, str]:
+        """iPhone にコピーしたときの相対パス。M4 は TAKE フォルダごとコピーする。"""
+        stem = f"{date}_{number:03d}"
+        return {t: f"{stem}.TAKE/{stem}_{t}.WAV" for t in self.track_names}

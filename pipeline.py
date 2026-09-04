@@ -293,17 +293,27 @@ def cmd_field_script(args) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     cfg = config_mod.load(outdir) if (outdir / "session_config.json").exists() else config_mod.SessionConfig()
     profile = get_profile(args.recorder or DEFAULT_PROFILE)
-    tracks = list(profile.channel_groups[args.group])
     manifest = outdir / "ingest.json"
     if manifest.exists():
-        # 実際の TAKE 名を使う。iPhone にコピーしたときのフォルダ構成をそのまま想定する。
+        # 実際の TAKE 名を使う。iPhone にコピーしたときの構成をそのまま想定する。
+        # 系統定義も ingest.json 側を正とする(F3 は録音モードで系統が変わるため、
+        # プロファイルの既定値をそのまま信じてはいけない)。
+        groups = read_json(manifest).get("channel_groups") or profile.channel_groups
+        tracks = list(groups[args.group])
         loaded = _load_takes(args.root, args.date, outdir)
         takes = len(loaded)
-        files = [f"{Path(t.files[tr]).parent.name}/{Path(t.files[tr]).name}"
-                 for t in loaded for tr in tracks]
+        files = []
+        for t in loaded:
+            for tr in tracks:
+                name = Path(t.files[tr]).name
+                # M4 は TAKE フォルダごとコピーする。F3 はフォルダを掘らない。
+                files.append(f"{Path(t.dir).name}/{name}" if t.dir else name)
     else:
+        # 原本がまだ母艦に無い段階では、命名規則からパスを組み立てる。
+        # 機種ごとに違うのでプロファイルに任せる(M4 は TAKE フォルダ、F3 は直下)。
+        tracks = list(profile.channel_groups[args.group])
         takes = args.takes
-        files = [f"{args.date}_{i:03d}.TAKE/{args.date}_{i:03d}_{t}.WAV"
+        files = [profile.relative_files(args.date, i)[t]
                  for i in range(1, takes + 1) for t in tracks]
     text = field_mod.field_script(
         args.date, files, takes, len(tracks),

@@ -151,12 +151,18 @@ output/260802/
 | プロファイル | 状態 | 備考 |
 |---|---|---|
 | `zoom-m4` | **本実装** | `{date}_{番号}.TAKE/` に Tr1/Tr2/TrMic。260802・260726 で検証済み |
-| `zoom-f3` | スタブ | 呼ぶと `NotImplementedError`。想定ファイル配置は docstring に記載 |
-| `single-file` | スタブ | 同上。MP3入力時は事前WAV変換が必要、というメモを docstring に記載 |
+| `zoom-f3` | **本実装** | ルート直下に `{date}_{番号}.WAV`(ステレオ)または `_Tr1`/`_Tr2`(モノラル2本)。260704 で検証済み |
+| `single-file` | スタブ | 呼ぶと `NotImplementedError`。MP3入力時は事前WAV変換が必要、というメモを docstring に記載 |
+
+F3 は録音モードが2つあり、**ファイル名で自動判別する**。TAKE フォルダを掘らないので、
+現場スクリプトが組み立てるパスも機種によって変わる(`RecorderProfile.relative_files`)。
+F3 には内蔵マイクがないため系統は `ext` のみで、`source` は実質 `ext_only` 固定になる。
 
 `channel_groups`(例 `{"ext": ["Tr1","Tr2"], "int": ["TrMic"]}`)が、どのトラックがどの系統に
 属するかを表す。2トラックで1系統ならモノラル2本を左右に組み、1トラックならそれ自体がステレオ、
-と `merge` が解釈する。
+と `merge` が解釈する。`ext_lr_map: swapped` は **`ext` 系統に対して**効き、2本を組む
+場合は `join` の map 指定で、既にステレオの場合は `pan=stereo|c0=c1|c1=c0` で入れ替える
+(内蔵マイクは機体に固定されているので対象外)。
 
 **`--recorder` は `ingest`(と `all`)でしか指定できない。** 取り込み時に決まった機種と
 `channel_groups` は `output/{date}/ingest.json` に記録され、`merge` 以降の各段はそれを読む。

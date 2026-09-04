@@ -60,7 +60,7 @@ from .loudness import (
     measure,
     solve_gain,
 )
-from .merge import JOIN_MAPS
+from .merge import JOIN_MAPS, SWAP_STEREO
 from .util import FFMPEG, PipelineError, fmt_time, log, probe_audio, run
 
 # --- プロキシ ---------------------------------------------------------------
@@ -96,6 +96,10 @@ def proxy_filter(
             a, b = 2 * i, 2 * i + 1
             lbl = f"s{i}"
             chains.append(f"[{a}:a][{b}:a]{JOIN_MAPS[lr_map]}[{lbl}]")
+            labels.append(lbl)
+        elif lr_map == "swapped":
+            lbl = f"s{i}"
+            chains.append(f"[{i}:a]{SWAP_STEREO}[{lbl}]")
             labels.append(lbl)
         else:
             labels.append(f"{i}:a")
