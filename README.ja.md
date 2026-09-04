@@ -130,7 +130,8 @@ output/260802/
 | `box_parent_folder_id` | Box のフォルダID(数字) | 空ならルート直下。**フォルダ名ではなくID** |
 
 `orchestra` / `concert_date` / `box_parent_folder_id` の既定値はプロジェクト直下の
-`pipeline_defaults.json` に置く。`ingest` 時に `session_config.json` へコピーされ、
+`pipeline_defaults.json` に置く(**追跡しない**。ひな型は `pipeline_defaults.example.json`)。
+`ingest` 時に `session_config.json` へコピーされ、
 **既に値があれば上書きしない**。ある時期は同じ団体の練習が続く運用なので、団体が変わったら
 `pipeline_defaults.json` を書き換えれば以降の新規 `ingest` に反映される。特定の日付だけ
 別扱いにしたい場合はその日付の値を直接編集する。

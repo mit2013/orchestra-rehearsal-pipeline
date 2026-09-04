@@ -41,7 +41,8 @@ the announcement text written for you.
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env                          # credentials
+cp .env.example .env                                        # credentials
+cp pipeline_defaults.example.json pipeline_defaults.json    # ensemble name, Box parent folder
 cp session_config.example.json session_config.json
 
 .venv/bin/python pipeline.py ingest    --date 260829 --recorder zoom-f3
@@ -169,8 +170,9 @@ decay (2.1 s in the low-mids falling to 0.8 s near 10 kHz, measuring 1.72 s
 overall). It is not a model of any real room. Point `--reverb-ir` at a real one
 if you have it.
 
-**Box and Google Drive credentials are yours to supply.** See `.env.example`.
-Nothing is bundled and nothing phones home.
+**Box and Google Drive credentials are yours to supply.** See `.env.example` and
+`pipeline_defaults.example.json`; neither the real file is tracked. Nothing is
+bundled and nothing phones home.
 
 **The interface is Japanese.** Log output, generated announcement text, and the
 design documents are all in Japanese. The code and this file are not.

@@ -46,6 +46,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+# 団体名・本番日・Box の親フォルダIDが入る。ひな型は pipeline_defaults.example.json。
+/pipeline_defaults.json
 .box_tokens.json
 .google_tokens.json
 
