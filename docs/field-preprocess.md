@@ -121,18 +121,30 @@ iPhone 側と母艦側で設定が食い違うと、帰宅前に配った MP3 �
 
 ### 3-4. 転送手段
 
-母艦は自宅にあり、iPhone は外にいる。**iCloud Drive を使うと決めた(260901)。**
-受け口は次のフォルダで、`field-watch` が既定で見張る。
+母艦は自宅にあり、iPhone は外にいる。**Google Drive を使う(260903 に変更)。**
+受け口は Drive の次のフォルダで、`field-watch` が既定で見張る。
 
 ```
-~/Library/Mobile Documents/com~apple~CloudDocs/orchestra-recording-pipeline/inbox/
+マイドライブ/orchestra-recording-pipeline/inbox/
 ```
 
-選んだ理由は準備がほぼ要らないことである。Tailscale で `scp` するほうが速度は
-読めるが、両方に Tailscale を入れ、母艦で SSH を有効にし、iPhone に鍵を置く必要が
-ある。全体の所要のうち転送は主役ではなさそうなので、まず iCloud Drive で一度通し、
-足を引っ張ると分かってから切り替える。置き場をこのフォルダにすれば `field-watch` の
-コマンドは変わらない。
+当初は iCloud Drive にしたが(260901)、母艦側で有効にできなかった。アカウント記録
+(`MobileMeAccounts.plist`)に `altDSID` が書き戻されない状態で、設定パネルが
+アカウントを解決できずに固まる。さらに `CLOUDDESKTOP` のフラグだけが立っていたため、
+iCloud Drive をオンにすると `~/Documents`(このリポジトリを含む約 50GB)が同期対象に
+なる危険があった。
+
+Google Drive にした理由は、配布経路で既に使っていて資格情報が生きていること、
+そして母艦側の同期設定に依存しないこと(API で直接読む)である。Box も検討したが、
+契約を続けるか未定とのことなので新しい依存を足さないことにした。
+
+**スコープの拡張が要った。** `drive.file` は「このアプリが作ったファイル」しか
+見えないので、iPhone の Drive アプリが置いたファイルは一覧にも出てこない。実際に
+叩いて確認したところ、マイドライブ直下は 1 件しか返らなかった。`drive.readonly` を
+足して 147 件見えるようになった。
+
+ローカルフォルダを見張る従来の経路は `--via dir` で残してある。Tailscale で `scp`
+する場合や、あとから iCloud Drive が使えるようになった場合はそちらを使う。
 
 ```
 microSD からの吸い出し + iPhone での符号化   ← 未知。実測が要る
@@ -142,9 +154,8 @@ microSD からの吸い出し + iPhone での符号化   ← 未知。実測が�
 Box アップロード + 通知                     5分程度
 ```
 
-**母艦側で iCloud Drive を有効にしておく必要がある。** このリポジトリのある Mac では
-まだ無効で(`~/Library/Mobile Documents` が存在しない)、`field-watch` はその旨を
-出して止まる。システム設定 → Apple アカウント → iCloud → iCloud Drive をオンにすること。
+**iPhone 側は Drive アプリからアップロードするだけでよい。** 母艦側の準備は
+`field-watch` を起動しておくことだけで、同期クライアントは要らない。
 
 母艦がスリープしていると始まらないので、練習日は起こしておく運用にするか、
 Wake on LAN を使うこと。
@@ -318,13 +329,13 @@ review-apply   ページに保存された判定を confirmed.json に反映す�
 field-export   確定境界で切り、ブロックごとにマスターして MP3 にする
 ```
 
-転送方式が決まっていなくても `field-watch --dir` で通る。iCloud Drive でも
-Tailscale の置き場でも「所定のフォルダにファイルが現れる」点は同じである。
+既定は Google Drive(`--via drive`)。ローカルフォルダを見張りたいときは
+`--via dir` か `--dir <パス>` を渡す。
 
 ## 7. 残っていること
 
 - **§4-3 の現場実測。** 次の練習日に、M4 の接続から通知までを区間ごとに計測する
-- **母艦で iCloud Drive を有効にする(§3-4)。** いまは無効で `field-watch` が止まる
+- ~~母艦で iCloud Drive を有効にする~~ → **Google Drive に変更して解決(260903)**
 - **チューニング起点の境界提案を、次の練習日でもう一度確かめる。** 既定に据えたが、
   検証できたのは 260829 の1日だけである。外した日は `--no-tuning-first` で
   従来の方式に戻せる
