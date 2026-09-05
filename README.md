@@ -123,6 +123,26 @@ for a 0.9-second hall as for a 2.4-second one.
 24-bit IRs outright. `pedalboard.Convolution` works and is a pip install, with no
 plugin host required.
 
+### 4. Spectral subtraction for room noise (off by default)
+
+Some rooms hum. One session was recorded under a ceiling air conditioner running
+at full power, and the upward compression of step 2 lifted that hiss along with
+the conductor — audibly, in a way listeners described as "you can tell something
+was done here". Turning the makeup down fixes the hiss and loses the voice.
+
+`--denoise 12` subtracts the noise instead, before it gets lifted. The noise
+shape is measured from the recording itself: the mean power spectrum of the
+quietest 10% of frames. Across three blocks it took 7.3-7.5 dB out of the gaps,
+around 7 dB in the 160-500 Hz band where this noise lives and 2-4 dB above 4 kHz.
+
+`afftdn` managed 0.6 dB. Its `residual_floor` defaults to -38 dB, which caps
+reduction when the floor sits at -36 dBFS, and `nt=white` assumes a flat spectrum
+while 64% of this noise sat in 160-500 Hz. The model did not fit the noise.
+
+Subtract too hard and the residue rings as isolated tones. A gain floor of
+`10^(-reduce_db/20)` bounds that, which is what the `--denoise` value actually
+sets. It runs after the reverb and before the master chain.
+
 ## How loudness is guaranteed
 
 Compression changes loudness, so a single measure-then-apply pass does not land

@@ -29,6 +29,7 @@ from pathlib import Path
 
 from orchpipe import apply as apply_mod
 from orchpipe import config as config_mod
+from orchpipe import denoise as denoise_mod
 from orchpipe import box_upload as box_mod
 from orchpipe import export as export_mod
 from orchpipe import field as field_mod
@@ -267,6 +268,7 @@ def cmd_mix(args) -> None:
         noise_ceiling_db=args.noise_ceiling,
         reverb_mix=args.reverb_mix,
         reverb_ir=Path(args.reverb_ir) if args.reverb_ir else None,
+        denoise_db=args.denoise,
         force=args.force,
     )
     print()
@@ -693,6 +695,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ホール残響を混ぜる割合 (0〜1)。0 で無効")
     sp.add_argument("--reverb-ir", default=None,
                     help="インパルス応答(既定: Birmingham Symphony Hall。.wir も可)")
+    sp.add_argument("--denoise", type=float, default=0.0,
+                    help="空調などの定常音を実測形状で引く量 [dB]。0 で無効。"
+                         f"入れるなら {denoise_mod.DEFAULT_REDUCE_DB:g} 前後")
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
