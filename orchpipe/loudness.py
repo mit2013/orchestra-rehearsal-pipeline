@@ -213,20 +213,32 @@ def noise_floor(
     win_s: float = NOISE_FLOOR_WIN_S,
     percentile: float = NOISE_FLOOR_PERCENTILE,
     sr: int = 16000,
+    start: float | None = None,
+    dur: float | None = None,
+    pre_filter: str | None = None,
 ) -> float:
     """暗騒音の水準[dBFS]。短い窓の実効音量の下位パーセンタイルで測る。
 
     「いちばん静かな瞬間がどれくらいか」を知りたいので、ラウドネス(K特性)ではなく
     素の RMS を使う。窓を短くするほど本当の無音に近づくが、短すぎると波形の谷を
     拾うので 0.4 秒にしてある。
+
+    `start` / `dur` で範囲を、`pre_filter` で前処理を指定できる。1本のプロキシに
+    複数ブロックが入っている現場経路では、ブロックごとに切り出したうえで、
+    符号化前に当てた固定ゲインを戻してから測る必要がある。
     """
     import numpy as np
 
-    proc = subprocess.run(
-        [FFMPEG, "-v", "error", "-i", str(path), "-f", "f32le", "-acodec", "pcm_f32le",
-         "-ac", "1", "-ar", str(sr), "-"],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
+    cmd = [FFMPEG, "-v", "error"]
+    if start is not None:
+        cmd += ["-ss", f"{start:.3f}"]
+    if dur is not None:
+        cmd += ["-t", f"{dur:.3f}"]
+    cmd += ["-i", str(path)]
+    if pre_filter:
+        cmd += ["-af", pre_filter]
+    cmd += ["-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1", "-ar", str(sr), "-"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if proc.returncode != 0:
         raise PipelineError(f"暗騒音の測定に失敗: {path.name}")
     x = np.frombuffer(proc.stdout, dtype="<f4").astype(np.float64)

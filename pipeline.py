@@ -515,7 +515,9 @@ def cmd_field_export(args) -> None:
         proxy, confirmed, outdir, cfg, args.date,
         variant=args.variant, proxy_gain_db=args.gain,
         target_lufs=args.target_lufs, true_peak_db=args.true_peak,
-        ref_margin=args.ref_margin, bitrate=args.bitrate, force=args.force,
+        ref_margin=args.ref_margin, parallel_db=args.parallel,
+        noise_ceiling_db=args.noise_ceiling,
+        bitrate=args.bitrate, force=args.force,
     )
     write_json(outdir / "field_export.json", {"proxy": str(proxy), "blocks": rows})
     print()
@@ -775,6 +777,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
     sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
     sp.add_argument("--ref-margin", type=float, default=120.0)
+    sp.add_argument("--parallel", type=float, default=loud_mod.PARALLEL_MAKEUP_DB,
+                    help="パラレルコンプの makeup [dB]。0 で無効。"
+                         "mix と同じくブロックごとの暗騒音で自動的に抑制される")
+    sp.add_argument("--noise-ceiling", type=float, default=None,
+                    help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
+                         f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.set_defaults(func=cmd_field_export)
 

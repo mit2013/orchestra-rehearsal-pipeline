@@ -56,8 +56,13 @@ from .loudness import (
     DEFAULT_TARGET_LUFS,
     DEFAULT_TRUE_PEAK_DB,
     LIMITER_OVERSAMPLE,
+    NOISE_FLOOR_BELOW_TARGET_DB,
+    PARALLEL_MAKEUP_DB,
+    PARALLEL_THRESHOLD_DB,
+    limit_parallel_makeup,
     master_chain,
     measure,
+    noise_floor,
     solve_gain,
 )
 from .merge import JOIN_MAPS, SWAP_STEREO
@@ -197,14 +202,28 @@ def run_field_export(
     comp_attack_ms: float = DEFAULT_COMP_ATTACK_MS,
     comp_release_ms: float = DEFAULT_COMP_RELEASE_MS,
     comp_knee_db: float = DEFAULT_COMP_KNEE_DB,
+    parallel_db: float = PARALLEL_MAKEUP_DB,
+    noise_ceiling_db: float | None = None,
     bitrate: str = PROXY_BITRATE,
     force: bool = False,
 ) -> list[dict]:
     """プロキシ 1 本から、確定境界に従って配布用 MP3 を書き出す。
 
-    ブロックごとに `mix.run_mix` と同じマスターチェーン(ゲイン -> コンプ ->
-    トゥルーピークリミッター)を通す。ゲインの求め方も `loudness.solve_gain` を
-    共有しているので、原本から作った WAV と同じ目標ラウドネスに乗る。
+    ブロックごとに `mix.run_mix` と同じマスターチェーン(ゲイン -> パラレルコンプ
+    -> コンプ -> トゥルーピークリミッター)を通す。ゲインの求め方も
+    `loudness.solve_gain` を共有しているので、原本から作った WAV と同じ目標
+    ラウドネスに乗る。
+
+    **パラレルコンプの持ち上げ量も `mix` と同じく暗騒音から抑える。** 以前は
+    `master_chain` を持ち上げ量を渡さずに呼んでいたため、既定の +17 dB が
+    黙って使われ、`limit_parallel_makeup` を一度も通らなかった。260905 は
+    空調の大きい会場で、速報版の指揮者の声の場面で「サー」が目立った。
+    暗騒音はブロックごとに 9.4 dB 違うことがあるので、日ごとではなく
+    ブロックごとに測って決める。
+
+    暗騒音はプロキシのゲインを戻してから、そのブロックの範囲だけを測る。
+    プロキシは 1 本に全ブロックが入っているので、ファイル全体を測ると
+    休憩や片付けの区間を巻き込んでしまう。
     """
     from .apply import load_confirmed
     from .export import block_titles, write_tags, year_from_date
@@ -228,14 +247,21 @@ def run_field_export(
     log(f"  プロキシのゲイン {proxy_gain_db:+.1f} dB を戻してから測定します")
     log(f"  目標 {target_lufs:+.1f} LUFS / 天井 {true_peak_db:+.1f} dBTP / "
         f"コンプ {comp_ratio:g}:1 しきい値 {threshold_db:+.1f} dBFS")
+    ceiling = (noise_ceiling_db if noise_ceiling_db is not None
+               else target_lufs - NOISE_FLOOR_BELOW_TARGET_DB)
+    if parallel_db > 0:
+        log(f"  パラレルコンプ: makeup 上限 {parallel_db:+.0f} dB "
+            f"(しきい値 {PARALLEL_THRESHOLD_DB:+.0f} dBFS / 小さい音だけを持ち上げる)")
+        log(f"    暗騒音の天井 {ceiling:+.0f} dBFS を超えないところまで"
+            f"ブロックごとに抑えます")
 
     def chain(gain_db: float, *, oversample: int = LIMITER_OVERSAMPLE,
-              with_limiter: bool = True) -> str:
+              with_limiter: bool = True, makeup_db: float = 0.0) -> str:
         return master_chain(
             gain_db, threshold_db=threshold_db, true_peak_db=true_peak_db,
             ratio=comp_ratio, attack_ms=comp_attack_ms, release_ms=comp_release_ms,
             knee_db=comp_knee_db, sample_rate=sr, oversample=oversample,
-            with_limiter=with_limiter,
+            with_limiter=with_limiter, parallel_db=makeup_db,
         )
 
     rows: list[dict] = []
@@ -258,9 +284,17 @@ def run_field_export(
         gain = target_lufs - pre.integrated
         log(f"    素の値 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
+        # 暗騒音を測り、持ち上げ量の上限をこのブロック向けに決める(mix と同じ)。
+        makeup = parallel_db
+        floor = float("-inf")
+        if parallel_db > 0:
+            floor = noise_floor(proxy, start=start, dur=dur, pre_filter=undo)
+            makeup, why = limit_parallel_makeup(floor, gain, parallel_db, ceiling)
+            log(f"    {why}")
+
         def after_master(g: float):
             return measure(proxy, m_start, m_dur,
-                           pre_filter=f"{undo},{chain(g, oversample=1)}")
+                           pre_filter=f"{undo},{chain(g, oversample=1, makeup_db=makeup)}")
 
         def report(g: float, res, resid: float) -> None:
             log(f"    マスター通過後 {res.integrated:+.1f} LUFS (残差 {resid:+.2f} LU)")
@@ -269,10 +303,14 @@ def run_field_export(
 
         gain, _after_comp = solve_gain(after_master, target_lufs, gain, on_step=report)
 
+        # パラレルコンプが入るとラベル付きのグラフになるので、`-af` では扱えない。
+        filt = f"{undo},{chain(gain, makeup_db=makeup)}"
+        graph = (["-filter_complex", f"[0:a]{filt}[out]", "-map", "[out]"]
+                 if ";" in filt else ["-af", filt])
         run(
             [FFMPEG, "-hide_banner", "-v", "error", "-stats", "-y",
              "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(proxy),
-             "-af", f"{undo},{chain(gain)}",
+             *graph,
              "-c:a", "libmp3lame", "-b:a", bitrate,
              "-map_metadata", "-1", str(dst)],
             desc="    書き出し中...",
@@ -289,6 +327,8 @@ def run_field_export(
         rows.append({
             "block": title, "start": round(start, 3), "end": round(end, 3),
             "path": str(dst), "gain_db": round(gain, 2),
+            "noise_floor_db": None if floor == float("-inf") else round(floor, 2),
+            "parallel_makeup_db": round(makeup, 2),
             "window": window_desc, "before": pre.to_json(),
             "after": after.to_json(), "after_whole": whole.to_json(),
             "size_mb": round(dst.stat().st_size / 2**20, 1),
