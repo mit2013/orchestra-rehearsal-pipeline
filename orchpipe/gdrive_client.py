@@ -46,6 +46,7 @@ LEGACY_ROOT_NAME = "練習録音"
 UPLOAD_CHUNK = 16 * 1024 * 1024
 DOWNLOAD_CHUNK = 16 * 1024 * 1024
 MAX_UPLOAD_RETRIES = 8
+MAX_DOWNLOAD_RETRIES = 8
 
 # 数分かかる転送では一時的な切断が普通に起こる。ここに挙げたものは再開して続行する。
 RETRIABLE_ERRORS = (
@@ -295,6 +296,12 @@ class DriveClient:
         """ファイルを `dst` へ落とす。数百MBを想定してチャンクで受ける。
 
         途中で切れたものを掴まないよう、`.part` に書いてから名前を付け替える。
+
+        アップロードと同じく、途中の一時的な切断からは再開して続行する。
+        `MediaIoBaseDownload` は受信済みの位置を自分で覚えていて Range 付きで
+        取り直すので、**同じ downloader のまま `next_chunk` を呼び直せばよい**。
+        446 MiB のプロキシを落としている最中に SSL のハンドシェイクがタイムアウトし、
+        134 MiB 地点で全体が失敗した実例がある(260905)。
         """
         from googleapiclient.http import MediaIoBaseDownload
 
@@ -304,8 +311,28 @@ class DriveClient:
         with tmp.open("wb") as fh:
             downloader = MediaIoBaseDownload(fh, request, chunksize=DOWNLOAD_CHUNK)
             done = False
+            attempts = 0
             while not done:
-                status, done = downloader.next_chunk(num_retries=3)
+                try:
+                    status, done = downloader.next_chunk(num_retries=3)
+                    attempts = 0
+                except RETRIABLE_ERRORS as e:
+                    attempts += 1
+                    if attempts > MAX_DOWNLOAD_RETRIES:
+                        raise PipelineError(
+                            f"{dst.name} のダウンロードが {MAX_DOWNLOAD_RETRIES} 回連続で"
+                            f"失敗しました: {type(e).__name__}: {e}"
+                        ) from e
+                    wait = min(60.0, 2.0 ** attempts)
+                    fh.flush()          # 受信済みの量を正しく報告するため
+                    got = tmp.stat().st_size if tmp.exists() else 0
+                    log(
+                        f"      通信エラー ({type(e).__name__})。{wait:.0f} 秒後に "
+                        f"{got/2**20:.0f} MiB 地点から再開します "
+                        f"(リトライ {attempts}/{MAX_DOWNLOAD_RETRIES})"
+                    )
+                    time.sleep(wait)
+                    continue
                 if status and on_progress:
                     on_progress(status.progress())
         tmp.replace(dst)
