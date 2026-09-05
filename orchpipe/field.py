@@ -62,7 +62,7 @@ from .loudness import (
     limit_parallel_makeup,
     master_chain,
     measure,
-    noise_floor,
+    noise_report,
     solve_gain,
 )
 from .merge import JOIN_MAPS, SWAP_STEREO
@@ -284,12 +284,15 @@ def run_field_export(
         gain = target_lufs - pre.integrated
         log(f"    素の値 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
-        # 暗騒音を測り、持ち上げ量の上限をこのブロック向けに決める(mix と同じ)。
+        # 暗騒音を測る(mix と同じ)。パラレルコンプを使わなくても毎回測って見せる。
+        noise = noise_report(proxy, start=start, dur=dur, pre_filter=undo)
+        log(f"    {noise.describe()}")
+        for line in noise.hint():
+            log(f"      {line}")
+
         makeup = parallel_db
-        floor = float("-inf")
         if parallel_db > 0:
-            floor = noise_floor(proxy, start=start, dur=dur, pre_filter=undo)
-            makeup, why = limit_parallel_makeup(floor, gain, parallel_db, ceiling)
+            makeup, why = limit_parallel_makeup(noise.floor_db, gain, parallel_db, ceiling)
             log(f"    {why}")
 
         def after_master(g: float):
@@ -327,7 +330,9 @@ def run_field_export(
         rows.append({
             "block": title, "start": round(start, 3), "end": round(end, 3),
             "path": str(dst), "gain_db": round(gain, 2),
-            "noise_floor_db": None if floor == float("-inf") else round(floor, 2),
+            "noise": noise.to_json(),
+            "noise_floor_db": (None if noise.floor_db == float("-inf")
+                               else round(noise.floor_db, 2)),
             "parallel_makeup_db": round(makeup, 2),
             "window": window_desc, "before": pre.to_json(),
             "after": after.to_json(), "after_whole": whole.to_json(),

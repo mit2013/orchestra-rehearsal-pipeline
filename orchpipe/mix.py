@@ -40,7 +40,7 @@ from .loudness import (
     PARALLEL_MAKEUP_DB,
     PARALLEL_THRESHOLD_DB,
     limit_parallel_makeup,
-    noise_floor,
+    noise_report,
     GAIN_SETTLE_LU,
     master_chain,
     measure,
@@ -236,12 +236,17 @@ def run_mix(
         gain = target_lufs - pre.integrated
         log(f"    合成後 {pre.describe()}  基準={window_desc} -> 暫定ゲイン {gain:+.2f} dB")
 
-        # 1-b. 暗騒音を測り、持ち上げ量の上限をこのブロック向けに決める。
+        # 1-b. 暗騒音を測る。**パラレルコンプを使わなくても毎回測って人に見せる。**
+        #      ノイズ除去を入れるかどうかの手がかりになるうえ、自動判定の閾値を
+        #      決めるだけの実例がまだ集まっていないためである(loudness.NoiseReport)。
+        noise = noise_report(inputs[0])
+        log(f"    {noise.describe()}")
+        for line in noise.hint():
+            log(f"      {line}")
+
         makeup = parallel_db
-        floor = float("-inf")
         if parallel_db > 0:
-            floor = noise_floor(inputs[0])
-            makeup, why = limit_parallel_makeup(floor, gain, parallel_db, ceiling)
+            makeup, why = limit_parallel_makeup(noise.floor_db, gain, parallel_db, ceiling)
             log(f"    {why}")
 
         # 2. コンプを通すとラウドネスが下がるので、実際に通して測り直して補正する。
@@ -301,7 +306,9 @@ def run_mix(
             "gain_db": round(gain, 2),
             "after": after.to_json(),
             "after_whole": whole.to_json(),
-            "noise_floor_db": None if floor == float("-inf") else round(floor, 2),
+            "noise": noise.to_json(),
+            "noise_floor_db": (None if noise.floor_db == float("-inf")
+                               else round(noise.floor_db, 2)),
             "parallel_makeup_db": round(makeup, 2),
             "pre_limiter_true_peak_db": round(pre_limit.true_peak, 2),
             "limiter_max_gr_db": round(gr, 2),

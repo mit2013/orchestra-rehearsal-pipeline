@@ -90,6 +90,8 @@ PARALLEL_MAKEUP_DB = 17.0      # 0 で無効。大きいほど静音部が持ち
 NOISE_FLOOR_BELOW_TARGET_DB = 14.0   # 目標 -20 LUFS なら天井は -34 dBFS
 NOISE_FLOOR_WIN_S = 0.4              # 短い窓のほうが本当の暗騒音に近い
 NOISE_FLOOR_PERCENTILE = 0.1
+# 「静かなフレーム」とみなす割合。合奏ブロックの休符と間がここに入る。
+NOISE_QUIET_PERCENTILE = 30.0
 PARALLEL_THRESHOLD_DB = -46.0  # 静音部より下。ここから上を潰して定常に近づける
 PARALLEL_RATIO = 20.0
 PARALLEL_ATTACK_MS = 20.0
@@ -217,16 +219,78 @@ def noise_floor(
     dur: float | None = None,
     pre_filter: str | None = None,
 ) -> float:
-    """暗騒音の水準[dBFS]。短い窓の実効音量の下位パーセンタイルで測る。
+    """暗騒音の水準[dBFS]だけが要るときの近道。中身は `noise_report` と同じ。
 
-    「いちばん静かな瞬間がどれくらいか」を知りたいので、ラウドネス(K特性)ではなく
-    素の RMS を使う。窓を短くするほど本当の無音に近づくが、短すぎると波形の谷を
-    拾うので 0.4 秒にしてある。
-
-    `start` / `dur` で範囲を、`pre_filter` で前処理を指定できる。1本のプロキシに
-    複数ブロックが入っている現場経路では、ブロックごとに切り出したうえで、
-    符号化前に当てた固定ゲインを戻してから測る必要がある。
+    水準だけを見ると空調の日を取り逃がす。何をどう測っているか、なぜばらつきも
+    見る必要があるのかは `NoiseReport` の説明を参照。
     """
+    r = noise_report(path, win_s, sr, start, dur, pre_filter, percentile=percentile)
+    return r.floor_db
+
+
+@dataclass
+class NoiseReport:
+    """暗騒音の診断。**水準だけでなく、ばらつきも見る。**
+
+    どちらも短い窓(既定 0.4 秒)の実効音量から出す。ラウドネス(K特性)ではなく
+    素の RMS を使うのは、「いちばん静かな瞬間がどれくらいか」を知りたいためである。
+
+    `floor_db` は下位 0.1 パーセンタイルで、パラレルコンプの持ち上げ量を抑える
+    判断に使っている。ただし**これは耳につく暗騒音より大幅に低く出る**。260905 は
+    -74.1 dBFS を返したが、実際に「サー」と聞こえていたのは -62 dBFS 前後だった。
+    いちばん静かな一瞬を拾ってしまうためで、水準だけを見ていると空調の日を
+    取り逃がす。
+
+    `quiet_iqr_db` はそこを補うために足したもので、静かなフレーム(下位 30%)の
+    四分位範囲である。**人の気配や物音で揺れているか、機械が一定に鳴っているか**を
+    見ている。260829(問題なし)は 4.5 / 5.5 / 7.8 dB、260905(空調が目立った)は
+    1.3 / 1.3 / 1.3 dB だった。水準では分かれなかったが、ばらつきでは分かれる。
+
+    **まだ自動判定には使っていない。** 比較できた日が 2 日しかなく、閾値を
+    決めるには足りない。数値と読み方を人に見せるところまでにとどめている。
+    """
+
+    floor_db: float          # 下位 0.1% [dBFS]
+    quiet_median_db: float   # 静かなフレームの中央値 [dBFS]
+    quiet_iqr_db: float      # 静かなフレームの四分位範囲 [dB]
+    n_frames: int
+
+    def to_json(self) -> dict:
+        return {
+            "floor_db": round(self.floor_db, 2),
+            "quiet_median_db": round(self.quiet_median_db, 2),
+            "quiet_iqr_db": round(self.quiet_iqr_db, 2),
+            "n_frames": self.n_frames,
+        }
+
+    def describe(self) -> str:
+        return (f"暗騒音 {self.floor_db:+.1f} dBFS / 静かな部分の中央値 "
+                f"{self.quiet_median_db:+.1f} dBFS / ばらつき {self.quiet_iqr_db:.1f} dB")
+
+    def hint(self) -> list[str]:
+        """人に渡す読み方。判断はしない。当てはまらなければ空。"""
+        if self.n_frames <= 0 or not (
+                self.quiet_iqr_db < 2.5 and self.quiet_median_db > -58.0):
+            return []
+        return [
+            "静かな部分のばらつきが小さく、水準も高めです。空調のような機械の",
+            "定常音が入っている可能性があります。パラレルコンプを弱める",
+            "(--parallel 8 など)か、ノイズ除去(--denoise 12)をお試しください。",
+            "(比較できた録音が 2 日分しかない段階の目安です)",
+        ]
+
+
+def noise_report(
+    path: Path,
+    win_s: float = NOISE_FLOOR_WIN_S,
+    sr: int = 16000,
+    start: float | None = None,
+    dur: float | None = None,
+    pre_filter: str | None = None,
+    quiet_percentile: float = NOISE_QUIET_PERCENTILE,
+    percentile: float = NOISE_FLOOR_PERCENTILE,
+) -> NoiseReport:
+    """暗騒音の水準とばらつきを 1 回の読み込みで測る。引数は `noise_floor` と同じ。"""
     import numpy as np
 
     cmd = [FFMPEG, "-v", "error"]
@@ -244,10 +308,17 @@ def noise_floor(
     x = np.frombuffer(proc.stdout, dtype="<f4").astype(np.float64)
     n = max(1, int(sr * win_s))
     if len(x) < n * 10:
-        return float("-inf")
+        return NoiseReport(float("-inf"), float("-inf"), 0.0, 0)
     frames = np.array([20 * np.log10(np.sqrt((x[i:i + n] ** 2).mean()) + 1e-12)
                        for i in range(0, len(x) - n, n)])
-    return float(np.percentile(frames, percentile))
+    quiet = frames[frames <= np.percentile(frames, quiet_percentile)]
+    q1, q3 = np.percentile(quiet, [25.0, 75.0])
+    return NoiseReport(
+        floor_db=float(np.percentile(frames, percentile)),
+        quiet_median_db=float(np.median(quiet)),
+        quiet_iqr_db=float(q3 - q1),
+        n_frames=int(len(frames)),
+    )
 
 
 def limit_parallel_makeup(
