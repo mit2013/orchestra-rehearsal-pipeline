@@ -353,27 +353,41 @@ def receive_proxy(
 
 # --- 現場(a-Shell)で流すスクリプト ------------------------------------------
 
+# 機種ごとに変わるのは「何をつなぐか」と「何をコピーするか」だけ。
+# ここが実際の操作と食い違うと現場で迷うので、プロファイル名から引く。
+RECORDER_NOTES = {
+    "zoom-m4": (
+        "ZOOM M4 を File Transfer モードにし、USB-C で iPhone につなぐ\n"
+        "#      (M4 は必ず**電池で駆動**すること。USB からの給電では足りない)",
+        "{date}_*.TAKE をフォルダごと",
+    ),
+    "zoom-f3": (
+        "ZOOM F3 を USB-C で iPhone につなぎ、カードリーダとして認識させる",
+        "{date}_*.WAV を(F3 はフォルダを作らないのでファイルを直接)",
+    ),
+    "single-file": ("音源のあるところへ移動する", "{date} の音源を"),
+}
+
+
 FIELD_SCRIPT_TEMPLATE = """#!/bin/sh
 # {date} の練習録音を配布用プロキシ 1 本にまとめる(iPhone / a-Shell 用)。
 #
-#   1. ZOOM M4 を File Transfer モードにし、USB-C で iPhone につなぐ
-#      (M4 は必ず**電池で駆動**すること。USB からの給電では足りない)
-#   2. microSD の {date}_*.TAKE を iPhone にコピーする
+#   1. {connect}
+#   2. microSD の {copy} iPhone にコピーする
 #   3. このスクリプトのある場所で `sh {name}` を実行する
 #
 # 出力は {out} 一本({bitrate} MP3)。これだけを母艦へ送れば、境界提案から
-# Box 配布まで進む。32bit float の原本は消さずに持ち帰ること
+# 配布まで進む。32bit float の原本は消さずに持ち帰ること
 # (Drive 用の WAV は帰宅後に原本から作る)。
+#
+# a-Shell のシェルは素朴なので、変数・行継続・set -e・&& を使っていない。
+# ffmpeg の行が長いのはそのためである。
 
-set -e
-OUT="{out}"
+{inputs_comment}
+ffmpeg -hide_banner -y{inputs} -filter_complex "{filt}" -map "[out]" -c:a libmp3lame -b:a {bitrate} -map_metadata -1 "{out}"
 
-ffmpeg -hide_banner -y \\
-{inputs}  -filter_complex "{filt}" \\
-  -map "[out]" -c:a libmp3lame -b:a {bitrate} -map_metadata -1 \\
-  "$OUT"
+ls -lh "{out}"
 
-ls -lh "$OUT"
 # ログの max_volume が -0.1 dB 以上なら、固定ゲイン {gain:+.1f} dB では足りていない。
 # その日は帰宅後に原本から作り直すこと。
 """
@@ -389,14 +403,18 @@ def field_script(
     gain_db: float = PROXY_GAIN_DB,
     bitrate: str = PROXY_BITRATE,
     name: str = "field_master.sh",
+    recorder: str = "zoom-m4",
 ) -> str:
     """現場で流す sh スクリプトの中身。母艦の実装と同じフィルタ列を埋め込む。
 
     `files` は TAKE ごとにトラック順に並べた相対パス(merge と同じ並び)。
     """
-    inputs = "".join(f'  -i "{f}" \\\n' for f in files)
+    inputs = "".join(f' -i "{f}"' for f in files)
+    inputs_comment = "# 入力: " + ", ".join(files)
+    connect, copy = RECORDER_NOTES.get(recorder, RECORDER_NOTES["zoom-m4"])
     return FIELD_SCRIPT_TEMPLATE.format(
-        date=date, name=name, inputs=inputs,
+        date=date, name=name, inputs=inputs, inputs_comment=inputs_comment,
+        connect=connect.format(date=date), copy=copy.format(date=date),
         out=out or f"{date}_proxy.mp3",
         filt=proxy_filter(n_takes, n_tracks, lr_map, gain_db),
         bitrate=bitrate, gain=gain_db,

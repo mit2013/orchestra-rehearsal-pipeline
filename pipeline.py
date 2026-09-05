@@ -319,6 +319,7 @@ def cmd_field_script(args) -> None:
         args.date, files, takes, len(tracks),
         out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
         gain_db=args.gain, bitrate=args.bitrate, name=args.name,
+        recorder=profile.name,
     )
     dst = outdir / args.name
     dst.write_text(text, encoding="utf-8")
