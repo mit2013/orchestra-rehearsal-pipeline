@@ -10,14 +10,14 @@
   {
     "index": 2,
     "start": "01:03:15",
-    "end": "01:13:35",
+    "end": "01:13:39",
     "label": "休憩1",
     "action": "remove",
     "confidence": 1.0
   },
   {
     "index": 3,
-    "start": "01:13:35",
+    "start": "01:13:39",
     "end": "02:11:00",
     "label": "合奏2",
     "action": "keep",
@@ -26,14 +26,14 @@
   {
     "index": 4,
     "start": "02:11:00",
-    "end": "02:19:27",
+    "end": "02:19:31",
     "label": "休憩2",
     "action": "remove",
     "confidence": 1.0
   },
   {
     "index": 5,
-    "start": "02:19:27",
+    "start": "02:19:31",
     "end": "03:14:04",
     "label": "合奏3",
     "action": "keep",
