@@ -143,6 +143,26 @@ Subtract too hard and the residue rings as isolated tones. A gain floor of
 `10^(-reduce_db/20)` bounds that, which is what the `--denoise` value actually
 sets. It runs after the reverb and before the master chain.
 
+### Steps 3-5 are off by default
+
+Reverb, parallel compression and denoising all ship disabled. They are the three
+things this pipeline does that it cannot check its own work on: whether a hall
+suits a recording, and how far the quiet parts may be lifted, depend on a room
+the software has never heard. Loudness and true peak are verified after writing
+and fail the run when they miss; these three cannot be.
+
+Set them once for your own venue in `pipeline_defaults.json`, which is
+gitignored and holds per-installation values:
+
+```json
+{"mastering": {"reverb_mix": 0.15, "parallel_db": 17.0, "denoise_db": 0.0}}
+```
+
+Those are the values this recording setup settled on — a Zoom F3 with external
+mics in a room whose noise floor sits near -70 dBFS. They are a conclusion about
+one room, not a recommendation. Start at zero and read the noise diagnostic that
+`mix` prints for every block.
+
 ## How loudness is guaranteed
 
 Compression changes loudness, so a single measure-then-apply pass does not land

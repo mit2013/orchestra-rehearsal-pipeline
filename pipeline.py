@@ -249,11 +249,31 @@ def cmd_normalize(args) -> None:
     )
 
 
+def _mastering(root: Path, **overrides) -> dict[str, float]:
+    """耳で決める処理の値を決める。コマンドラインが優先、無ければ設定ファイル。
+
+    設定ファイルにも無ければ 0(無効)。知らない環境で強い加工が黙って掛かるより、
+    何も掛からないほうが安全だからである。詳しくは `config.MASTERING_DEFAULTS`。
+    """
+    values = config_mod.load_mastering_defaults(root)
+    used = []
+    for key, given in overrides.items():
+        if given is not None:
+            values[key] = float(given)
+        elif values[key] > 0:
+            used.append(f"{key}={values[key]:g}")
+    if used:
+        log(f"{config_mod.DEFAULTS_NAME} の {config_mod.MASTERING_KEY}: " + ", ".join(used))
+    return values
+
+
 def cmd_mix(args) -> None:
     outdir = out_dir(args.root, args.date)
     recorder, groups = _session_info(args.root, args.date, outdir)
     cfg = config_mod.load(outdir)
     log(f"session_config: source={cfg.source}, mix_ratio={cfg.mix_ratio}, ext_lr_map={cfg.ext_lr_map}")
+    m = _mastering(args.root, reverb_mix=args.reverb_mix, parallel_db=args.parallel,
+                   denoise_db=args.denoise)
     written = mix_mod.run_mix(
         outdir, cfg, list(groups),
         target_lufs=args.target_lufs,
@@ -264,11 +284,11 @@ def cmd_mix(args) -> None:
         comp_attack_ms=args.comp_attack,
         comp_release_ms=args.comp_release,
         comp_knee_db=args.comp_knee,
-        parallel_db=args.parallel,
+        parallel_db=m["parallel_db"],
         noise_ceiling_db=args.noise_ceiling,
-        reverb_mix=args.reverb_mix,
+        reverb_mix=m["reverb_mix"],
         reverb_ir=Path(args.reverb_ir) if args.reverb_ir else None,
-        denoise_db=args.denoise,
+        denoise_db=m["denoise_db"],
         force=args.force,
     )
     print()
@@ -515,7 +535,8 @@ def cmd_field_export(args) -> None:
         proxy, confirmed, outdir, cfg, args.date,
         variant=args.variant, proxy_gain_db=args.gain,
         target_lufs=args.target_lufs, true_peak_db=args.true_peak,
-        ref_margin=args.ref_margin, parallel_db=args.parallel,
+        ref_margin=args.ref_margin,
+        parallel_db=_mastering(args.root, parallel_db=args.parallel)["parallel_db"],
         noise_ceiling_db=args.noise_ceiling,
         bitrate=args.bitrate, force=args.force,
     )
@@ -688,18 +709,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="コンプのリリース [ms]")
     sp.add_argument("--comp-knee", type=float, default=loud_mod.DEFAULT_COMP_KNEE_DB,
                     help="コンプのニー幅 [dB]")
-    sp.add_argument("--parallel", type=float, default=loud_mod.PARALLEL_MAKEUP_DB,
-                    help="パラレルコンプの makeup [dB]。小さい音だけを持ち上げる。0 で無効")
+    sp.add_argument("--parallel", type=float, default=None,
+                    help="パラレルコンプの makeup [dB]。小さい音だけを持ち上げる。0 で無効。"
+                         "既定は pipeline_defaults.json の mastering.parallel_db")
     sp.add_argument("--noise-ceiling", type=float, default=None,
                     help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
                          f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")
-    sp.add_argument("--reverb-mix", type=float, default=reverb_mod.DEFAULT_MIX,
-                    help="ホール残響を混ぜる割合 (0〜1)。0 で無効")
+    sp.add_argument("--reverb-mix", type=float, default=None,
+                    help="ホール残響を混ぜる割合 (0〜1)。0 で無効。"
+                         "既定は pipeline_defaults.json の mastering.reverb_mix")
     sp.add_argument("--reverb-ir", default=None,
                     help="インパルス応答(既定: Birmingham Symphony Hall。.wir も可)")
-    sp.add_argument("--denoise", type=float, default=0.0,
+    sp.add_argument("--denoise", type=float, default=None,
                     help="空調などの定常音を実測形状で引く量 [dB]。0 で無効。"
-                         f"入れるなら {denoise_mod.DEFAULT_REDUCE_DB:g} 前後")
+                         f"入れるなら {denoise_mod.DEFAULT_REDUCE_DB:g} 前後。"
+                         "既定は pipeline_defaults.json の mastering.denoise_db")
     sp.set_defaults(func=cmd_mix)
 
     sp = common(sub.add_parser("export", help="曲目単位のWAV/MP3書き出しとタグ埋め込み"))
@@ -777,9 +801,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
     sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
     sp.add_argument("--ref-margin", type=float, default=120.0)
-    sp.add_argument("--parallel", type=float, default=loud_mod.PARALLEL_MAKEUP_DB,
+    sp.add_argument("--parallel", type=float, default=None,
                     help="パラレルコンプの makeup [dB]。0 で無効。"
-                         "mix と同じくブロックごとの暗騒音で自動的に抑制される")
+                         "mix と同じくブロックごとの暗騒音で自動的に抑制される。"
+                         "既定は pipeline_defaults.json の mastering.parallel_db")
     sp.add_argument("--noise-ceiling", type=float, default=None,
                     help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
                          f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")

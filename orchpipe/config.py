@@ -52,6 +52,21 @@ FALLBACK_ORCHESTRA = "Windrose Sinfonie Orchester"
 # pipeline_defaults.json から session_config.json へ引き継ぐキーと、その既定値。
 INHERITED_DEFAULTS = {"orchestra": FALLBACK_ORCHESTRA, "concert_date": "", "box_parent_folder_id": ""}
 
+# マスタリングのうち「耳でしか良否が決まらない」処理の既定値。
+#
+# **組み込みの既定はすべて 0(無効)である。** これらは会場と機材で適・不適が変わり、
+# ソフトは自分の出来を判定できない。残響が合うかどうかも、静音部をどれだけ持ち上げて
+# よいかも、その部屋を聴いた人にしか分からない。知らない環境に強い加工を既定で当てると、
+# 使う人は「何かおかしいが原因が分からない」という状態になる。効果を数値で検証できる
+# 処理(ラウドネス、トゥルーピーク、コンプ)とは扱いを分ける。
+#
+# 自分の会場で値が決まったら `pipeline_defaults.json` の `mastering` に書く。そこが
+# 各自の環境の置き場で、リポジトリには入らない(`.gitignore` 済み)。この録音環境では
+# 残響 0.15 / パラレルコンプ +17 dB を採用しているが、それはこの環境での結論であって
+# 既定値ではない。
+MASTERING_KEY = "mastering"
+MASTERING_DEFAULTS = {"reverb_mix": 0.0, "parallel_db": 0.0, "denoise_db": 0.0}
+
 CONFIG_NAME = "session_config.json"
 
 
@@ -152,6 +167,33 @@ def load_project_defaults(root: Path) -> dict:
     if not isinstance(data, dict):
         raise PipelineError(f"{DEFAULTS_NAME} はオブジェクトである必要があります")
     return {k: str(data.get(k, v)) for k, v in INHERITED_DEFAULTS.items()}
+
+
+def load_mastering_defaults(root: Path) -> dict[str, float]:
+    """`pipeline_defaults.json` の `mastering` を読む。無いキーは 0(無効)。
+
+    日付ごとではなくプロジェクト単位の設定である。会場が変わらないかぎり値も
+    変わらないため、`session_config.json` には持たせていない。特定の日だけ変えたい
+    ときは `--reverb-mix` などで上書きする。
+    """
+    p = root / DEFAULTS_NAME
+    got = {}
+    if p.exists():
+        data = read_json(p)
+        if not isinstance(data, dict):
+            raise PipelineError(f"{DEFAULTS_NAME} はオブジェクトである必要があります")
+        got = data.get(MASTERING_KEY) or {}
+        if not isinstance(got, dict):
+            raise PipelineError(f"{DEFAULTS_NAME} の {MASTERING_KEY} はオブジェクトである必要があります")
+    out = {}
+    for k, v in MASTERING_DEFAULTS.items():
+        try:
+            out[k] = float(got.get(k, v))
+        except (TypeError, ValueError):
+            raise PipelineError(
+                f"{DEFAULTS_NAME} の {MASTERING_KEY}.{k} は数値である必要があります: {got.get(k)!r}"
+            ) from None
+    return out
 
 
 def ensure(outdir: Path, root: Path, force: bool = False) -> SessionConfig:

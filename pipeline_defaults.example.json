@@ -1,5 +1,10 @@
 {
   "orchestra": "Example Sinfonie Orchester",
   "concert_date": "yyyymmdd",
-  "box_parent_folder_id": "0"
+  "box_parent_folder_id": "0",
+  "mastering": {
+    "reverb_mix": 0.0,
+    "parallel_db": 0.0,
+    "denoise_db": 0.0
+  }
 }
