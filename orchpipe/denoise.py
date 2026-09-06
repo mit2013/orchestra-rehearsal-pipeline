@@ -182,7 +182,17 @@ def denoise(x, noise, reduce_db: float):
             norm[o:o + NFFT] += w ** 2
         i += CHUNK_FRAMES
 
-    return (y / np.maximum(norm, 1e-8))[:len(x)]
+    y, norm = y[:len(x)], norm[:len(x)]
+    # **端を割らない。** 重なり合う窓の二乗和(`norm`)は内部では一定だが、先頭と末尾では
+    # 窓が足りず 0 に近づく。そこで割ると値が跳ね上がり、0.3 ms ほどの巨大なクリックになる。
+    # 260905 の配布物で先頭 +13.45 dBFS のスパイクを出した(マスターチェーンより後ろに
+    # 置いた経路だったのでリミッターにも捕まらなかった)。
+    # 窓が足りていないところは処理せず、元の波形をそのまま残す。40 ms 程度の話であり、
+    # そこだけノイズが引かれないだけで済む。
+    steady = np.median(norm[NFFT:-NFFT]) if len(norm) > 3 * NFFT else norm.max()
+    out = np.array(x, dtype=np.float64)
+    np.divide(y, norm, out=out, where=norm > 0.5 * steady)
+    return out
 
 
 def apply_denoise(src: Path, dst: Path, reduce_db: float = DEFAULT_REDUCE_DB) -> dict:
