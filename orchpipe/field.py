@@ -456,7 +456,7 @@ AUTO_SCRIPT_TEMPLATE = """#!/bin/sh
 
 # 1. その場にある WAV から、いちばん新しい日付のぶんだけを選ぶ
 ls *.WAV | sort > all.txt
-cut -d_ -f1 all.txt | sort -u | tail -1 > date.txt
+sed "s/_.*//" all.txt | sort -u | tail -1 > date.txt
 grep -f date.txt all.txt | sed "s/^/file /" > list.txt
 
 # 2. 何を使うかを表示する。**本数が合わなければここで止めること。**
@@ -474,6 +474,17 @@ ls -lh *_proxy.mp3
 # ログの max_volume が -0.1 dB 以上なら、固定ゲイン {gain:+.1f} dB では足りていない。
 # その日は帰宅後に原本から作り直すこと。
 """
+
+
+# a-Shell に入っているコマンド(260912 に実機の `help -l` で確認)。
+# パイプとリダイレクトは動く。
+#
+#   使えるもの: ls sort sed grep egrep fgrep tail head cat awk tr uniq wc
+#               xargs find echo mv cp rm mkdir touch stat date sleep
+#               ffmpeg ffprobe python3 jq realpath basename dirname expr
+#   **無いもの: cut**(最初にこれで落ちた。`sed "s/_.*//"` で代用している)
+#
+# 迷ったら `python3` がある。シェルの小細工で苦しくなったらそちらへ逃げてよい。
 
 
 def auto_date_script(
