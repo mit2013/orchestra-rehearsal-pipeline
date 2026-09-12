@@ -443,26 +443,61 @@ MP3 は `libmp3lame` 320kbps 固定で、ID3タグを `mutagen` で書き込む:
 WAV は帰宅後に原本から作る。
 
 ```bash
-# 母艦: 現場で流すスクリプトを用意しておく(その日の TAKE 名を埋め込む)
-.venv/bin/python pipeline.py field-script --date 260829
+# 母艦: 現場で流すスクリプトを用意し、Drive の受け口へ置く(iPhone から取りに行く)
+.venv/bin/python pipeline.py field-script --date 260912 --put
 
 # 現場: M4 を File Transfer モードにして iPhone に接続(M4 は電池駆動)
 #       microSD の TAKE を iPhone にコピーし、a-Shell で
-#       sh field_master.sh   -> 260829_proxy.mp3(3時間で約 413MiB)
+#       sh field_master.sh   -> 260912_proxy.mp3(3時間で約 500MiB)
 
-# 母艦: 受け口(iCloud Drive)を見張り、届いたら受け取って境界レビューの手前まで進める
-.venv/bin/python pipeline.py field-watch --date 260829 --splits 3
+# 母艦: 受け口を見張り、届いたら受け取って境界レビューの手前まで進める
+#       (もう上がっているなら --existing)
+.venv/bin/python pipeline.py field-watch --date 260912 --splits 3
 
 # ここで review_page.html を Artifact として公開し、iPhone で境界を確定する
-.venv/bin/python pipeline.py review-apply --date 260829 --input <ページから取り出したJSON>
+.venv/bin/python pipeline.py review-apply --date 260912 --input <ページから取り出したJSON>
 
-.venv/bin/python pipeline.py field-export --date 260829
-.venv/bin/python pipeline.py box-upload   --date 260829
-.venv/bin/python pipeline.py notify       --date 260829
+.venv/bin/python pipeline.py field-export --date 260912
+.venv/bin/python pipeline.py box-upload   --date 260912
+.venv/bin/python pipeline.py notify       --date 260912
 ```
 
 `field-watch` は `field-receive` → `propose` → `review-page` をまとめたもので、
-一つずつ実行してもよい。
+一つずつ実行してもよい。`field-receive` に渡すファイルは `--input` で指定する。
+
+### スクリプトは毎週作り直さない
+
+`field-script` が出す `field_master.sh` には**日付が入っていない**。作業フォルダの
+`*.WAV` を見て、**いちばん新しい日付のものだけ**を選んで処理する。
+
+```sh
+ls *.WAV | sort > fm_all.txt
+sed "s/_.*//" fm_all.txt | sort -u | tail -1 > fm_date.txt   # 260912
+grep -f fm_date.txt fm_all.txt | sed "s/^/file /" > fm_list.txt
+```
+
+前の週のスクリプトをそのまま流して、埋め込まれた古い日付のファイルが無くて
+ffmpeg が止まる、という事故(260912 に実際に起きた)がこれで無くなる。処理する日付と
+使う入力は実行時に画面へ出すので、間違っていればその場で気づける。作業ファイルは
+`fm_` を頭に付け、最後に消す。
+
+**a-Shell の制約に合わせてある。** `cut` が無いので `sed "s/_.*//"` を使う
+(260912 に `cut: not found` で止まった)。`pan=stereo|c0=c1|c1=c0` の `|` が
+sed の区切りやシェルのパイプと衝突するため、区切りは `#` にし、`-af` の値は
+シングルクォートで囲む。1 TAKE が複数ファイルに分かれる機種(M4)では日付を
+自分で見つけられないので、その場合は従来どおり日付を埋め込んだ形で出る
+(`--pin-date` で明示的にその形にもできる)。
+
+`--put` を付けると、受け口と同じ Drive のフォルダへ `field_master.sh` を同名で
+上書きする。現場では iPhone からしか触れないので、置いておくだけでは届かない。
+iPhone 側は Drive アプリで開き直し、a-Shell の作業フォルダへ入れ直す。
+
+### 帰宅前は Box だけで配る
+
+現場で配れるのは MP3 だけで、Drive 用の WAV は原本を持ち帰ってからになる。
+そのため `gdrive-upload` は WAV が無くても MP3 だけで通り、`notify` は Drive の
+日付フォルダがまだ無くても Box のリンクだけで文面を作る。「帰り道にはもう聴ける」が
+この経路の眼目なので、あとの工程が揃うまで通知を止めない。
 
 **受け口は iCloud Drive。** 既定は次のフォルダで、無ければ作る。
 
@@ -719,9 +754,13 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `field-watch` | `--dir` | iCloud Drive の inbox | プロキシの置き場を見張る |
 | `field-watch` | `--stable` | 15 秒 | サイズがこの秒数変わらなければ書き込み完了とみなす |
 | `field-watch` | `--receive-only` | — | 受け取るだけで propose / review-page を走らせない |
+| `field-watch` | `--pattern` | `{date}_*.mp3` | 受け口で探すファイル名。日付が入るので前週のプロキシを掴まない |
+| `field-watch` | `--existing` | — | 起動より前に置かれたファイルも対象にする |
 | `review-page` | `--pre` / `--post` | 45 秒 | 境界の前後に含める長さ |
 | `review-apply` | `--input` | 必須 | ページから取り出した JSON |
 | `field-script` | `--takes` | 2 | その日の TAKE 数(`ingest.json` があればそちらが優先) |
+| `field-script` | `--put` | — | 受け口の Drive フォルダへ同名で置く(iPhone から取りに行く) |
+| `field-script` | `--pin-date` | — | 日付を埋め込んだ従来の形で出す(既定は日付を自分で見つける形) |
 | `field-script` / `field-proxy` / `field-export` | `--gain` | -14 dB | プロキシに載せる固定ゲイン |
 | `field-receive` | `--input` | 必須 | 受け取ったプロキシ MP3 |
 | `field-receive` | `--move` | — | コピーではなく移動する |
