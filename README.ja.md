@@ -767,12 +767,13 @@ LINE 通知は付加的な機能なので、トークン未設定・ネットワ
 | `field-export` | `--variant` | なし | 版名。`export` と同じ |
 | `field-export` | `--target-lufs` / `--true-peak` / `--ref-margin` | mix と同じ | マスタリングの設定 |
 | `field-export` | `--parallel` / `--noise-ceiling` | mix と同じ | パラレルコンプの makeup と暗騒音の天井 |
-
-「設定ファイル」は `pipeline_defaults.json` の `mastering`。書かれていなければ 0(無効)。
 | `box-upload` | `--auth-timeout` | 300 秒 | 初回認証でブラウザ操作を待つ秒数 |
 | `gdrive-upload` | `--auth-timeout` | 無制限 | 同上 |
 | `notify` | `--no-line` | — | LINE への push を行わない |
 | 全コマンド | `--root` / `--force` | — | 作業ディレクトリ / 中間ファイルの作り直し |
+
+既定が「設定ファイル」とあるものは `pipeline_defaults.json` の `mastering` を読む。
+書かれていなければ 0(無効)。
 
 ## ライセンス
 
