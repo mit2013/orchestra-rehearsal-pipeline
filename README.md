@@ -2,8 +2,8 @@
 
 English overview: [README.en.md](README.en.md)。設計書は [`docs/`](docs/)、作った経緯は [`docs/journal/`](docs/journal/) にある。
 
-ZOOM M4 MicTrak の 4ch/32bit float 録音(1回の練習で約3時間)を、取り込みから配布・通知まで
-自動化する。手作業で2〜3時間かかっていた工程を、確認作業を除けば数分で回せるようにするのが目的。
+アマチュアオーケストラの練習録音(1回で約3時間・32bit float)を、取り込みから配布・通知まで
+自動化する。手作業で2〜3時間かかっていた工程を、人が境界を確かめる時間を除けば数分で回せる。
 
 ```
 取り込み → チャンネル結合 → TAKE連結 → 不要区間の候補提案 → [人が確認] → トリミング
@@ -11,20 +11,27 @@ ZOOM M4 MicTrak の 4ch/32bit float 録音(1回の練習で約3時間)を、取�
   → Box / Google Drive へアップロード → 通知文言生成 + LINE 通知
 ```
 
-260802(2合奏ブロック)・260726(3合奏ブロック)の2データセットで全工程を実行・検証済み。
+対応レコーダーは **ZOOM F3**(ステレオ1本、または Tr1/Tr2 の2本)と
+**ZOOM M4 MicTrak**(外部 Tr1/Tr2 + 内蔵ステレオの4ch)。1 TAKE が1ファイルの機種向けに
+汎用プロファイルもある。
 
-**次フェーズ**: LINE グループへの自動送信(グループIDの取得が別途必要)、
-指揮者の発言をカットしたダイジェスト版の作成。
+**毎週の練習で実運用している。** 260726 から 260912 まで5回分を通しで処理し、団員へ配布した。
+練習当日のうちに MP3 を配る[現場経路](#現場前処理帰宅前に-mp3-を配る)(iPhone でプロキシを作り、
+帰宅前に Box へ出す)も本番で使っている。指揮者の指示や中断を外したダイジェスト版
+(`research.py digest2`、設計は [`docs/research-digest-redesign.md`](docs/research-digest-redesign.md))と、
+空調などの定常音を引く[ノイズ除去](#定常ノイズの除去既定では無効)も動く。
+
+**次フェーズ**: LINE グループへの自動送信(グループIDの取得が別途必要)。
 
 ## セットアップ
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install numpy scipy soundfile matplotlib mutagen requests \
-    google-auth-oauthlib google-api-python-client google-auth-httplib2
+.venv/bin/pip install -r requirements.txt
 ```
 
-ffmpeg / ffprobe が PATH にあること(Homebrew 版で確認済み)。
+ffmpeg / ffprobe が PATH にあること(Homebrew 版で確認済み)。ダイジェスト版を作るときだけ、
+`faster-whisper` を追加で入れる(`requirements.txt` にコメントで書いてある)。
 
 ### 資格情報
 

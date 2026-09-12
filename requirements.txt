@@ -1,6 +1,7 @@
 # 本体
 numpy>=1.24
 scipy>=1.10
+soundfile>=0.12        # WAV の読み書き(残響・ノイズ除去)
 matplotlib>=3.7        # 境界確認用の波形画像
 mutagen>=1.46          # MP3 の ID3 タグ
 pedalboard>=0.9        # ホール残響の畳み込み
