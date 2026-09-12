@@ -455,19 +455,23 @@ AUTO_SCRIPT_TEMPLATE = """#!/bin/sh
 # 32bit float の原本は消さずに持ち帰ること(Drive 用の WAV は帰宅後に原本から作る)。
 
 # 1. その場にある WAV から、いちばん新しい日付のぶんだけを選ぶ
-ls *.WAV | sort > all.txt
-sed "s/_.*//" all.txt | sort -u | tail -1 > date.txt
-grep -f date.txt all.txt | sed "s/^/file /" > list.txt
+#    作業ファイルは fm_ で始める。名前がぶつからないようにし、最後に消す。
+ls *.WAV | sort > fm_all.txt
+sed "s/_.*//" fm_all.txt | sort -u | tail -1 > fm_date.txt
+grep -f fm_date.txt fm_all.txt | sed "s/^/file /" > fm_list.txt
 
 # 2. 何を使うかを表示する。**本数が合わなければここで止めること。**
 echo "--- この日付を処理します ---"
-cat date.txt
+cat fm_date.txt
 echo "--- 使う入力 ---"
-cat list.txt
+cat fm_list.txt
 
 # 3. 日付入りの出力名で走らせる
-sed -e "s#^#ffmpeg -hide_banner -y -f concat -safe 0 -i list.txt -af '{filt}' -c:a libmp3lame -b:a {bitrate} -map_metadata -1 #" -e 's#$#_proxy.mp3#' date.txt > run.sh
-sh run.sh
+sed -e "s#^#ffmpeg -hide_banner -y -f concat -safe 0 -i fm_list.txt -af '{filt}' -c:a libmp3lame -b:a {bitrate} -map_metadata -1 #" -e 's#$#_proxy.mp3#' fm_date.txt > fm_run.sh
+sh fm_run.sh
+
+# 4. 作業ファイルを片付ける(残すと iPhone の Documents が散らかる)
+rm -f fm_all.txt fm_date.txt fm_list.txt fm_run.sh
 
 ls -lh *_proxy.mp3
 
