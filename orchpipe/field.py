@@ -437,6 +437,84 @@ ls -lh "{out}"
 """
 
 
+AUTO_SCRIPT_TEMPLATE = """#!/bin/sh
+# 練習録音を配布用プロキシ 1 本にまとめる(iPhone / a-Shell 用)。
+#
+#   1. {connect}
+#   2. microSD の WAV を(F3 はフォルダを作らないのでファイルを直接) iPhone にコピーする
+#   3. このスクリプトのある場所で `sh {name}` を実行する
+#
+# **日付が書かれていないので、毎週作り直す必要はない。** その場にある .WAV の
+# うち、いちばん新しい日付のものだけを選んで使う。前の週のファイルが残っていても
+# 巻き込まない。出力は {{その日付}}_proxy.mp3({bitrate} MP3)。
+#
+# a-Shell のシェルは素朴なので、変数・コマンド置換・行継続・set -e・&& を
+# 使っていない。日付はファイル経由で受け渡し、最後の ffmpeg の行そのものを
+# sed で組み立てて sh に渡している。
+#
+# 32bit float の原本は消さずに持ち帰ること(Drive 用の WAV は帰宅後に原本から作る)。
+
+# 1. その場にある WAV から、いちばん新しい日付のぶんだけを選ぶ
+ls *.WAV | sort > all.txt
+cut -d_ -f1 all.txt | sort -u | tail -1 > date.txt
+grep -f date.txt all.txt | sed "s/^/file /" > list.txt
+
+# 2. 何を使うかを表示する。**本数が合わなければここで止めること。**
+echo "--- この日付を処理します ---"
+cat date.txt
+echo "--- 使う入力 ---"
+cat list.txt
+
+# 3. 日付入りの出力名で走らせる
+sed -e "s#^#ffmpeg -hide_banner -y -f concat -safe 0 -i list.txt -af '{filt}' -c:a libmp3lame -b:a {bitrate} -map_metadata -1 #" -e 's#$#_proxy.mp3#' date.txt > run.sh
+sh run.sh
+
+ls -lh *_proxy.mp3
+
+# ログの max_volume が -0.1 dB 以上なら、固定ゲイン {gain:+.1f} dB では足りていない。
+# その日は帰宅後に原本から作り直すこと。
+"""
+
+
+def auto_date_script(
+    n_tracks: int,
+    lr_map: str = "normal",
+    gain_db: float = PROXY_GAIN_DB,
+    bitrate: str = PROXY_BITRATE,
+    name: str = "field_master.sh",
+    recorder: str = "zoom-f3",
+) -> str | None:
+    """日付を自分で見つけるスクリプト。組めない構成なら `None` を返す。
+
+    **1 TAKE = 1 ファイルの機種でしか組めない。** concat デマルチプレクサは
+    ファイルを縦に繋ぐだけなので、M4 のように 1 TAKE が 2 本のモノラルに
+    分かれている構成は、`join` でステレオに組む工程が要り、ここには乗らない。
+    その場合は日付を埋め込んだ従来の形に落ちる。
+
+    左右の入れ替えは `pan` 一つで済むラベルなしのフィルタなので `-af` に置ける。
+    """
+    if n_tracks != 1:
+        return None
+    parts = []
+    if lr_map == "swapped":
+        parts.append(SWAP_STEREO)
+    parts.append(f"volume={gain_db:.6f}dB")
+    parts.append("volumedetect")
+    # 引用符まわりに三つ罠がある。
+    #  - 左右入れ替えの `pan` は `|` を含む。sed の区切り文字と衝突するので
+    #    区切りは `#` にしてある。
+    #  - その `|` は、生成した run.sh を読むシェルにはパイプに見える。そこで
+    #    `-af` の値は run.sh の中で単引用符に包む。
+    #  - 末尾に足す側の `s#$#...#` を二重引用符に入れると、シェルが `$#` を
+    #    「引数の個数」として展開してしまう。`-e` で分けて単引用符に入れる。
+    filt = ",".join(parts)
+    connect, _copy = RECORDER_NOTES.get(recorder, RECORDER_NOTES["zoom-m4"])
+    return AUTO_SCRIPT_TEMPLATE.format(
+        name=name, connect=connect.format(date="(その日)"),
+        filt=filt, bitrate=bitrate, gain=gain_db,
+    )
+
+
 def field_script(
     date: str,
     files: list[str],

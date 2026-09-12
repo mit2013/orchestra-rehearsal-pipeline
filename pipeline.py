@@ -337,12 +337,24 @@ def cmd_field_script(args) -> None:
         takes = args.takes
         files = [profile.relative_files(args.date, i)[t]
                  for i in range(1, takes + 1) for t in tracks]
-    text = field_mod.field_script(
-        args.date, files, takes, len(tracks),
-        out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
-        gain_db=args.gain, bitrate=args.bitrate, name=args.name,
-        recorder=profile.name,
-    )
+    # 1 TAKE = 1 ファイルの機種なら、日付を書かない形にできる。毎週作り直す
+    # 必要がなくなり、前の週のスクリプトを流して止まる事故(260912)も起きない。
+    text = None
+    if not args.pin_date:
+        text = field_mod.auto_date_script(
+            len(tracks), lr_map=cfg.ext_lr_map, gain_db=args.gain,
+            bitrate=args.bitrate, name=args.name, recorder=profile.name,
+        )
+    if text is None:
+        text = field_mod.field_script(
+            args.date, files, takes, len(tracks),
+            out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
+            gain_db=args.gain, bitrate=args.bitrate, name=args.name,
+            recorder=profile.name,
+        )
+        if not args.pin_date:
+            print(f"  ({profile.name} は 1 TAKE が {len(tracks)} ファイルに分かれるため、"
+                  f"日付を埋め込んだ形で出しました)")
     dst = outdir / args.name
     dst.write_text(text, encoding="utf-8")
     print(text)
@@ -761,6 +773,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="符号化前に当てる固定ゲイン [dB]")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.add_argument("--name", default="field_master.sh")
+    sp.add_argument("--pin-date", action="store_true",
+                    help="日付を埋め込んだ従来の形で出す(既定は日付を自分で見つける形)")
     sp.add_argument("--put", action="store_true",
                     help="Google Drive の受け口へ同名で上書きアップロードする"
                          "(iPhone から取りに行けるようにする)")
