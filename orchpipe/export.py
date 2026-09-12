@@ -73,7 +73,7 @@ def find_final_files(trimmed: Path) -> list[Path]:
     return [p for _, p in found]
 
 
-def find_wav_files(outdir: Path) -> list[Path]:
+def find_wav_files(outdir: Path, allow_empty: bool = False) -> list[Path]:
     """`export/` に書き出し済みの WAV を名前順で返す(Drive へのアップロード入力)。
 
     `trimmed/*_final.wav` から名前を組み直さないのは、`--variant` を付けたときに
@@ -84,7 +84,7 @@ def find_wav_files(outdir: Path) -> list[Path]:
     if not export.is_dir():
         raise PipelineError(f"{export} がありません。先に `export` を実行してください。")
     files = sorted(p for p in export.iterdir() if p.is_file() and p.suffix.lower() == ".wav")
-    if not files:
+    if not files and not allow_empty:
         raise PipelineError(f"{export} に WAV がありません。先に `export` を実行してください。")
     return files
 

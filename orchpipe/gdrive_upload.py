@@ -58,8 +58,13 @@ def local_md5(path: Path) -> str:
 
 
 def plan_wav(outdir: Path, date: str) -> list[tuple[Path, str]]:
-    """(ローカルの WAV, Drive 上の表示名)。export/ のファイル名をそのまま使う。"""
-    return [(p, p.name) for p in find_wav_files(outdir)]
+    """(ローカルの WAV, Drive 上の表示名)。export/ のファイル名をそのまま使う。
+
+    **WAV が 1 本も無くても止めない。** 現場経路では、帰宅前に MP3 だけを配って
+    WAV は原本を持ち帰ってから足す。そこで止めると、設計上いちばん大事な
+    「帰り道にはもう聴ける」が成立しない(260912 に実際に詰まった)。
+    """
+    return [(p, p.name) for p in find_wav_files(outdir, allow_empty=True)]
 
 
 def plan_mp3(outdir: Path) -> list[tuple[Path, str]]:

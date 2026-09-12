@@ -36,8 +36,8 @@ DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/{}"
 class Links:
     box_url: str
     box_password: str
-    drive_date_url: str
-    drive_mp3_url: str
+    drive_date_url: str | None
+    drive_mp3_url: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -65,33 +65,29 @@ def fetch_box_link(root: Path, date: str, cfg: SessionConfig) -> tuple[str, str]
     return url, password
 
 
-def fetch_drive_links(root: Path, date: str, cfg: SessionConfig) -> tuple[str, str]:
-    """Drive の {date} と {date}/MP3 のフォルダURLを取得する。"""
+def fetch_drive_links(
+    root: Path, date: str, cfg: SessionConfig
+) -> tuple[str | None, str | None]:
+    """Drive の {date} と {date}/MP3 のフォルダURLを取得する。
+
+    **まだ Drive に何も無ければ `(None, None)` を返す。**現場経路では Box への
+    配布が先に終わり、Drive は帰宅後になる。その段階で通知が出せないと、
+    設計の眼目である「帰り道にはもう聴ける」が成立しない(260912 に実際に詰まった)。
+    """
     orch = orchestra_folder_name(cfg.orchestra)
     client = DriveClient.connect(root)
 
     root_folder = client.find_child(ROOT_FOLDER_NAME, DRIVE_ROOT, folder=True)
-    if root_folder is None:
-        raise PipelineError(
-            f"Google Drive に「{ROOT_FOLDER_NAME}」フォルダが見つかりません。"
-            "先に `gdrive-upload` を実行してください。"
-        )
-    orch_folder = client.find_child(orch, root_folder["id"], folder=True)
-    if orch_folder is None:
-        raise PipelineError(f"Google Drive に「{orch}」フォルダが見つかりません。")
-    date_folder = client.find_child(date, orch_folder["id"], folder=True)
+    orch_folder = (client.find_child(orch, root_folder["id"], folder=True)
+                   if root_folder else None)
+    date_folder = (client.find_child(date, orch_folder["id"], folder=True)
+                   if orch_folder else None)
     if date_folder is None:
-        raise PipelineError(
-            f"Google Drive に {orch}/{date} フォルダが見つかりません。"
-            "先に `gdrive-upload` を実行してください。"
-        )
+        return None, None
     mp3_folder = client.find_child(MP3_FOLDER, date_folder["id"], folder=True)
-    if mp3_folder is None:
-        raise PipelineError(f"Google Drive に {orch}/{date}/{MP3_FOLDER} フォルダが見つかりません。")
-
     return (
         DRIVE_FOLDER_URL.format(date_folder["id"]),
-        DRIVE_FOLDER_URL.format(mp3_folder["id"]),
+        DRIVE_FOLDER_URL.format(mp3_folder["id"]) if mp3_folder else None,
     )
 
 
@@ -100,12 +96,21 @@ def fetch_drive_links(root: Path, date: str, cfg: SessionConfig) -> tuple[str, s
 # ---------------------------------------------------------------------------
 
 def build_messages(date: str, links: Links) -> dict[str, str]:
-    shirakawa = (
-        f"{date}の練習録音です。\n"
-        f"{links.drive_date_url}\n"
-        f"\n"
-        f"WAVとMP3が入っています。"
-    )
+    # Drive はまだ空のことがある(帰宅前は Box だけで配る)。その場合は
+    # リンクの行ごと落とし、代わりに今どうなっているかを書く。
+    if links.drive_date_url:
+        shirakawa = (
+            f"{date}の練習録音です。\n"
+            f"{links.drive_date_url}\n"
+            f"\n"
+            f"WAVとMP3が入っています。"
+        )
+    else:
+        shirakawa = (
+            f"{date}の練習録音です。\n"
+            f"\n"
+            f"WAV はまだ上がっていません(原本を持ち帰ってから追加します)。"
+        )
     members = (
         f"{date}の練習録音をアップロードしました。\n"
         f"{links.box_url}\n"
@@ -116,6 +121,8 @@ def build_messages(date: str, links: Links) -> dict[str, str]:
     downloadable = (
         f"{date}の練習録音(ダウンロード可能版)です。\n"
         f"{links.drive_mp3_url}"
+        if links.drive_mp3_url else
+        f"{date}のダウンロード可能版は、まだ用意できていません。"
     )
     return {"shirakawa": shirakawa, "members": members, "downloadable": downloadable}
 
@@ -189,8 +196,8 @@ def run_notify(root: Path, date: str, outdir: Path, cfg: SessionConfig, send_lin
     box_url, password = fetch_box_link(root, date, cfg)
     log(f"  Box   : {box_url}")
     drive_date_url, drive_mp3_url = fetch_drive_links(root, date, cfg)
-    log(f"  Drive : {drive_date_url}")
-    log(f"  Drive/MP3: {drive_mp3_url}")
+    log(f"  Drive : {drive_date_url or 'まだありません(Box だけで通知します)'}")
+    log(f"  Drive/MP3: {drive_mp3_url or 'まだありません'}")
 
     links = Links(box_url, password, drive_date_url, drive_mp3_url)
     msgs = build_messages(date, links)

@@ -1,0 +1,7 @@
+[
+  {"index": 1, "start": "00:00:00", "end": "00:27:38", "label": "音出し",       "action": "remove", "confidence": 1.0},
+  {"index": 2, "start": "00:27:38", "end": "01:43:00", "label": "合奏1",        "action": "keep",   "confidence": 1.0},
+  {"index": 3, "start": "01:43:00", "end": "02:14:39", "label": "休憩・声出し", "action": "remove", "confidence": 1.0},
+  {"index": 4, "start": "02:14:39", "end": "03:26:25", "label": "合奏2",        "action": "keep",   "confidence": 1.0},
+  {"index": 5, "start": "03:26:25", "end": "03:28:47", "label": "片付け",       "action": "remove", "confidence": 1.0}
+]

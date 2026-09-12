@@ -348,6 +348,20 @@ def cmd_field_script(args) -> None:
     print(text)
     print(f"  保存先: {dst}")
 
+    # 現場では iPhone からしか触れないので、置いておくだけでは届かない。
+    # 受け口と同じ Drive のフォルダへ、同じ名前で上書きする。iPhone 側は
+    # Drive アプリで開き直すだけでよく、日付の違う古いスクリプトを掴まない
+    # (260912 に、前の週のスクリプトを流して ffmpeg が止まった)。
+    if args.put:
+        from orchpipe.gdrive_client import DriveClient
+
+        client = DriveClient.connect(args.root)
+        folder = field_mod.ensure_drive_inbox(client)
+        r = client.upload(dst, args.name, folder["id"])
+        print(f"  Drive: orchestra-recording-pipeline/{field_mod.DRIVE_INBOX_NAME}/"
+              f"{args.name} に置きました(version={r.get('version')})")
+        print("  iPhone の Drive アプリで開き直し、a-Shell の作業フォルダへ入れ直してください。")
+
 
 def cmd_field_proxy(args) -> None:
     """母艦側でプロキシを作る(検証用、および iPhone が使えないときの代替)。"""
@@ -478,6 +492,11 @@ def cmd_field_watch(args) -> None:
     """受け口にプロキシが届くのを待ち、境界レビューの手前まで進める。"""
     outdir = out_dir(args.root, args.date)
     via = "dir" if args.dir else args.via
+    # 既定のパターンに日付を入れる。`--existing` で過去のファイルも対象にするため、
+    # その日のものだけに絞れないと前の週のプロキシを掴みうる。
+    pattern = args.pattern or f"{args.date}_*.mp3"
+    if args.existing:
+        log(f"起動前に置かれたファイルも対象にします(pattern={pattern})")
 
     if via == "drive":
         from orchpipe.gdrive_client import DriveClient
@@ -488,8 +507,9 @@ def cmd_field_watch(args) -> None:
             f"{field_mod.DRIVE_INBOX_NAME}(id={folder['id']})")
         outdir.mkdir(parents=True, exist_ok=True)
         src = field_mod.wait_for_proxy_drive(
-            client, folder["id"], outdir, pattern=args.pattern,
+            client, folder["id"], outdir, pattern=pattern,
             poll_s=args.poll, stable_s=args.stable, timeout_s=args.timeout,
+            since=0.0 if args.existing else None,
         )
         # 落としてきたものを動かす。コピーを二重に残さない。
         move = True
@@ -497,8 +517,9 @@ def cmd_field_watch(args) -> None:
         watch_dir = field_mod.ensure_inbox(Path(args.dir) if args.dir else None)
         log(f"受け口: {watch_dir}")
         src = field_mod.wait_for_proxy(
-            watch_dir, pattern=args.pattern, poll_s=args.poll,
+            watch_dir, pattern=pattern, poll_s=args.poll,
             stable_s=args.stable, timeout_s=args.timeout,
+            since=0.0 if args.existing else None,
         )
         move = args.move
 
@@ -740,6 +761,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="符号化前に当てる固定ゲイン [dB]")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.add_argument("--name", default="field_master.sh")
+    sp.add_argument("--put", action="store_true",
+                    help="Google Drive の受け口へ同名で上書きアップロードする"
+                         "(iPhone から取りに行けるようにする)")
     sp.set_defaults(func=cmd_field_script)
 
     sp = common(sub.add_parser("field-proxy", help="母艦側でプロキシを作る(検証・代替用)"))
@@ -779,7 +803,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ローカルのフォルダを見張る(指定すると --via dir になる。"
                          "省略時の既定は iCloud Drive の "
                          "orchestra-recording-pipeline/inbox)")
-    sp.add_argument("--pattern", default="*.mp3")
+    sp.add_argument("--pattern", default=None,
+                    help="受け口で探すファイル名(既定: {date}_*.mp3)。"
+                         "日付を含むので、前の週のプロキシを掴むことがない")
+    sp.add_argument("--existing", action="store_true",
+                    help="起動より前に置かれたファイルも対象にする。"
+                         "先にアップロードを終えてから母艦に頼むとき")
     sp.add_argument("--group", default="ext")
     sp.add_argument("--splits", type=int, default=None, help="propose に渡す分割数のヒント")
     sp.add_argument("--poll", type=float, default=field_mod.WATCH_POLL_S)
