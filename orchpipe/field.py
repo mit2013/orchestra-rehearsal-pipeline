@@ -374,8 +374,10 @@ def run_field_export(
 
         # 暗騒音を測る(mix と同じ)。パラレルコンプを使わなくても毎回測って見せる。
         noise = noise_report(proxy, start=start, dur=dur, pre_filter=undo)
-        log(f"    {noise.describe()}")
-        for line in noise.hint():
+        # **判定はこれから当てるゲインを足した高さで行う。**測っているのは固定ゲインを
+        # 打ち消した素の尺度で、その絶対値には意味がない(F3 は入力ゲインを持たない)。
+        log(f"    {noise.describe(gain)}")
+        for line in noise.hint(gain):
             log(f"      {line}")
 
         makeup = parallel_db

@@ -239,8 +239,10 @@ def run_mix(
         #      ノイズ除去を入れるかどうかの手がかりになるうえ、自動判定の閾値を
         #      決めるだけの実例がまだ集まっていないためである(loudness.NoiseReport)。
         noise = noise_report(inputs[0])
-        log(f"    {noise.describe()}")
-        for line in noise.hint():
+        # 判定は仕上がりの高さで行う(field-export と揃える)。素材の絶対値ではなく、
+        # これから当てるゲインを足した値を見る。理由は NoiseReport.hint を参照。
+        log(f"    {noise.describe(gain)}")
+        for line in noise.hint(gain):
             log(f"      {line}")
 
         makeup = parallel_db

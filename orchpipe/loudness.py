@@ -263,14 +263,38 @@ class NoiseReport:
             "n_frames": self.n_frames,
         }
 
-    def describe(self) -> str:
-        return (f"暗騒音 {self.floor_db:+.1f} dBFS / 静かな部分の中央値 "
+    def describe(self, gain_db: float = 0.0) -> str:
+        """測った値を読める形にする。`gain_db` を渡すと仕上がりの水準も添える。"""
+        base = (f"暗騒音 {self.floor_db:+.1f} dBFS / 静かな部分の中央値 "
                 f"{self.quiet_median_db:+.1f} dBFS / ばらつき {self.quiet_iqr_db:.1f} dB")
+        if gain_db:
+            base += f" (仕上がりでは {self.quiet_median_db + gain_db:+.1f} dBFS)"
+        return base
 
-    def hint(self) -> list[str]:
-        """人に渡す読み方。判断はしない。当てはまらなければ空。"""
-        if self.n_frames <= 0 or not (
-                self.quiet_iqr_db < 2.5 and self.quiet_median_db > -58.0):
+    def hint(self, gain_db: float = 0.0) -> list[str]:
+        """人に渡す読み方。判断はしない。当てはまらなければ空。
+
+        **`gain_db` を渡すこと。**この目安が言っているのは「仕上がりで暗騒音が
+        耳につく高さに来るか」であって、素材が何 dBFS で録れていたかではない。
+        素のレベルは録音機まかせの成り行きの値で、F3 のように入力ゲインの操作系を
+        持たない機種では日によって 27 dB も振れる(260829 が +11.4 dBFS、260912 が
+        -15.5 dBFS)。そこへ固定のしきい値を当てると、同じ会場の同じ空調でも
+        出たり出なかったりする。
+
+        そこで**これから当てるゲインを足した高さ**で判定する。`mix` も
+        `field-export` も、目標ラウドネスに載せるゲインが決まった時点で呼ぶこと。
+        260912 で両経路が揃ったことを確認している。素の尺度では `mix` が -47.9、
+        `field-export` が -67.8 dBFS と 19.9 dB も食い違っていたが(測っている
+        素材の尺度が違うだけで、鳴っている空調は同じ)、ゲインを足すと -44.4 と
+        -44.3 dBFS で一致する。
+
+        なお -58.0 という値そのものは、`mix` 経路で 2 日ぶんを見ただけの目安で、
+        当時は正規化後の尺度で読んでいた。この変更で判定点が仕上がりの高さへ
+        移ったぶん(master のゲインぶん、2〜4 dB 程度)わずかに出やすくなる。
+        実例が増えたら引き直すこと。
+        """
+        median = self.quiet_median_db + gain_db
+        if self.n_frames <= 0 or not (self.quiet_iqr_db < 2.5 and median > -58.0):
             return []
         return [
             "静かな部分のばらつきが小さく、水準も高めです。空調のような機械の",
