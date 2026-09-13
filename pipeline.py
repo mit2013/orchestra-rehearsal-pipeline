@@ -569,7 +569,11 @@ def cmd_field_export(args) -> None:
         variant=args.variant, proxy_gain_db=args.gain,
         target_lufs=args.target_lufs, true_peak_db=args.true_peak,
         ref_margin=args.ref_margin,
-        parallel_db=_mastering(args.root, parallel_db=args.parallel)["parallel_db"],
+        # **速報版にパラレルコンプはかけない。**設定ファイルは読まず、
+        # `--parallel` で明示されたときだけ効かせる。現場では人が細かく聴き比べる
+        # 時間がなく、暗騒音が持ち上がっていても気づけないまま配ることになるため
+        # (260905・260912 で実際にそうなった)。正式版は `mix` 側で人が判断する。
+        parallel_db=args.parallel,
         noise_ceiling_db=args.noise_ceiling,
         bitrate=args.bitrate, force=args.force,
     )
@@ -844,10 +848,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
     sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
     sp.add_argument("--ref-margin", type=float, default=120.0)
-    sp.add_argument("--parallel", type=float, default=None,
-                    help="パラレルコンプの makeup [dB]。0 で無効。"
-                         "mix と同じくブロックごとの暗騒音で自動的に抑制される。"
-                         "既定は pipeline_defaults.json の mastering.parallel_db")
+    sp.add_argument("--parallel", type=float, default=0.0,
+                    help="パラレルコンプの makeup [dB]。既定は 0(かけない)で、"
+                         "設定ファイルの mastering.parallel_db は読まない。"
+                         "速報版は耳で確かめる時間がないため。渡せば mix と同じく"
+                         "ブロックごとの暗騒音で自動的に抑制される")
     sp.add_argument("--noise-ceiling", type=float, default=None,
                     help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
                          f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")
