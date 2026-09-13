@@ -30,16 +30,33 @@ MP3 を 1 本だけ作り、それを母艦へ送る**。母艦は届いた MP3 
 その代償として MP3 の符号化が 1 世代増える(`-c copy` では切れない)。この 1 世代の
 差が実用上問題にならないことは検証すること(指示書 §4-1)。
 
-## 固定ゲインを 1 パスで決められる理由
+## ゲインは固定値ではなく、その日のピークから決める
 
-素材のピークは 0 dBFS を超える(260829 で +11.43 dBFS)。32bit float なので保持
-されているが、MP3 に符号化する前に下げないと潰れる。現場で 2 パス目を回すと
-microSD からの読み出しがもう一度発生して律速するため、**測ってから決めるのではなく
-固定値を当て、同じパスの中で `volumedetect` で結果を確認する**。ピークが 0 dBFS に
-達していたらログに警告が出るので、その日は原本から作り直せばよい。
+以前は固定 -14 dB を当てていた。素材のピークが 0 dBFS を超えることがあり
+(260829 で +11.43 dBFS)、MP3 に符号化する前に下げないと潰れるためである。
+**これが 260912 に破綻した。** その日のピークは -15.5 dBFS しかなく、そこへさらに
+14 dB 下げたので、符号化器に入るピークは -29.5 dBFS、静かな場面は -87.6 dBFS まで
+落ちた。そこは符号化器の雑音の底で、**静寂部に残る S/N は 13.6 dB しかない**。
+速報版にパラレルコンプを掛けたとき、その雑音ごと 18 dB 持ち上がり、
+「完全に音が壊れている」と評価された。
 
-固定ゲインは可逆である。母艦は `-PROXY_GAIN_DB` を戻してからラウドネスを測るので、
-プロキシ経由でも原本経由でも同じ目標に合う。
+ピークは日によって 27 dB も振れる(260829 が +11.4、260912 が -15.5)。固定値では
+どちらかが必ず損をする。したがって **符号化の前に 1 パス測り、ピークが -1 dBFS に
+来るゲインを当てる**。
+
+形式の問題ではないことは確かめてある。同じ素材を MP3 320k / MP3 V0 / AAC 256k /
+Opus 128k・192k で作り比べても静寂部の超過は横並びで、**可逆の FLAC でも同じだけ
+出た**。低いところに置きすぎているのが原因である。ゲインを +14 dB にすると静寂部の
+S/N は 13.6 dB から 31.8 dB になる。
+
+測定パスは復号だけなので符号化より軽い。以前は「microSD からの読み出しが 2 回
+発生して律速する」ことを理由に避けていたが、実際の運用では WAV を先に iPhone へ
+コピーしてから流すので、その前提はもう当たらない。
+
+**ゲインは可逆である。**現場で決めた値は出力ファイル名
+(`{date}_proxy_gain{+X.X}dB.mp3`)に埋め込み、母艦は `receive` でそれを読んで
+`ingest.json` に記録し、測定の前に打ち消す。名前に入っていない古いプロキシは
+従来どおり `PROXY_GAIN_DB` とみなす。
 """
 
 from __future__ import annotations
@@ -68,13 +85,43 @@ from .merge import JOIN_MAPS, SWAP_STEREO
 from .util import FFMPEG, PipelineError, fmt_time, log, probe_audio, run
 
 # --- プロキシ ---------------------------------------------------------------
-# 符号化前に当てる固定ゲイン。260829 の最大ピーク +11.43 dBFS に 2.6 dB の余裕を
-# 見た値。日によって上振れしても volumedetect が気づく。
+# 符号化直前にピークを置く高さ。ここから外れたぶんだけゲインを当てる。
+PROXY_PEAK_TARGET_DB = -1.0
+# ゲインの歯止め。測定が壊れていても暴走しないように。
+PROXY_GAIN_LIMIT_DB = 30.0
+# ピークを測れなかったとき(名前にゲインの無い古いプロキシ)の値。
 PROXY_GAIN_DB = -14.0
 PROXY_BITRATE = "320k"
 PROXY_SUFFIX = "_proxy.mp3"
+# 現場が出すファイル名。母艦はここからゲインを読む。
+PROXY_GAIN_RE = re.compile(r"_gain([-+]\d+(?:\.\d+)?)dB", re.IGNORECASE)
+# ピークだけを測るフィルタ。**stderr にも頼らずファイルへ直接書く。**
+# a-Shell のシェルで `2>` が使えるか確証がないため、`ametadata` の file= を使う。
+# 10 秒ごとに 1 行出るので、最後の行が全体のピークになる。
+PEAK_FILE = "fm_peak.txt"
+PEAK_FILTER = (
+    "asetnsamples=n=480000,astats=metadata=1:reset=0,"
+    "ametadata=mode=print:key=lavfi.astats.Overall.Peak_level:file=" + PEAK_FILE
+)
 
 _MAXVOL_RE = re.compile(r"max_volume:\s*(-?\d+(?:\.\d+)?)\s*dB")
+
+
+def gain_for_peak(peak_db: float) -> float:
+    """ピークを `PROXY_PEAK_TARGET_DB` に置くゲイン [dB]。0.1 dB に丸める。"""
+    g = PROXY_PEAK_TARGET_DB - peak_db
+    return round(max(-PROXY_GAIN_LIMIT_DB, min(PROXY_GAIN_LIMIT_DB, g)), 1)
+
+
+def gain_from_name(name: str) -> float | None:
+    """`..._gain+14.5dB.mp3` からゲインを読む。入っていなければ `None`。"""
+    m = PROXY_GAIN_RE.search(name)
+    return float(m.group(1)) if m else None
+
+
+def proxy_out_name(date: str, gain_db: float) -> str:
+    """現場が書き出すファイル名。ゲインを名前で運ぶ。"""
+    return f"{date}_proxy_gain{gain_db:+.1f}dB.mp3"
 
 
 def proxy_path(outdir: Path, group: str = "ext") -> Path:
@@ -141,17 +188,59 @@ def build_proxy_cmd(
     return cmd
 
 
+def measure_proxy_peak(
+    inputs: list[Path],
+    n_takes: int,
+    n_tracks: int,
+    lr_map: str = "normal",
+) -> float | None:
+    """符号化前のピーク [dBFS] を測る(母艦用)。ゲインを当てない状態の値。
+
+    現場のスクリプトは `PEAK_FILTER` で同じものを測る。こちらは stderr を
+    読めるので `volumedetect` をそのまま使う。
+    """
+    import subprocess
+
+    cmd = [FFMPEG, "-hide_banner", "-v", "info", "-nostats"]
+    for src in inputs:
+        cmd += ["-i", str(src)]
+    cmd += ["-filter_complex", proxy_filter(n_takes, n_tracks, lr_map, 0.0),
+            "-map", "[out]", "-f", "null", "-"]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    text = proc.stderr.decode("utf-8", "replace")
+    if proc.returncode != 0:
+        raise PipelineError(f"ピークの測定に失敗しました\n{text.strip()[-800:]}")
+    m = _MAXVOL_RE.search(text)
+    return float(m.group(1)) if m else None
+
+
 def build_proxy(
     inputs: list[Path],
     n_takes: int,
     n_tracks: int,
     dst: Path,
     lr_map: str = "normal",
-    gain_db: float = PROXY_GAIN_DB,
+    gain_db: float | None = None,
     bitrate: str = PROXY_BITRATE,
 ) -> dict:
-    """プロキシを作り、符号化直前のピークを確認する。"""
+    """プロキシを作り、符号化直前のピークを確認する。
+
+    `gain_db` を省くと**先に 1 パス測ってから**ピークが
+    `PROXY_PEAK_TARGET_DB` に来る値を使う。固定値を渡せば従来どおり。
+    """
     import subprocess
+
+    source_peak = None
+    if gain_db is None:
+        log("プロキシの前に素材のピークを測ります(復号のみ)")
+        source_peak = measure_proxy_peak(inputs, n_takes, n_tracks, lr_map)
+        if source_peak is None:
+            gain_db = PROXY_GAIN_DB
+            log(f"  ピークを読めませんでした。従来の {gain_db:+.1f} dB を使います")
+        else:
+            gain_db = gain_for_peak(source_peak)
+            log(f"  素材のピーク {source_peak:+.2f} dBFS "
+                f"-> ゲイン {gain_db:+.1f} dB(符号化直前を {PROXY_PEAK_TARGET_DB:+.1f} dBFS に置く)")
 
     cmd = build_proxy_cmd(inputs, n_takes, n_tracks, dst, lr_map, gain_db, bitrate)
     log(f"プロキシを作成: {dst.name}  <- {n_takes} TAKE x {n_tracks} トラック "
@@ -173,8 +262,8 @@ def build_proxy(
     dur = probe_audio(dst)["duration"]
     log(f"  {fmt_time(dur)} / {size_mb:.0f} MiB")
     return {"path": str(dst), "gain_db": gain_db, "bitrate": bitrate,
-            "pre_encode_peak_db": peak, "size_mb": round(size_mb, 1),
-            "duration": round(dur, 3)}
+            "source_peak_db": source_peak, "pre_encode_peak_db": peak,
+            "size_mb": round(size_mb, 1), "duration": round(dur, 3)}
 
 
 # --- プロキシからのブロック切り出し ------------------------------------------
@@ -371,6 +460,15 @@ def receive_proxy(
     info = probe_audio(dst)
     total, sr = info["duration"], info["sample_rate"]
 
+    # 現場が当てたゲインは**ファイル名で運ばれてくる**。測定の前に打ち消す値なので、
+    # 取り違えるとラウドネスが丸ごとずれる。名前に無ければ従来の固定値とみなす。
+    gain_db = gain_from_name(src.name)
+    if gain_db is None:
+        gain_db = PROXY_GAIN_DB
+        log(f"  注意: 名前にゲインが入っていません。従来の {gain_db:+.1f} dB とみなします")
+    else:
+        log(f"  現場で当てたゲイン {gain_db:+.1f} dB(名前から読みました)")
+
     manifest = {
         "date": date,
         "root": str(outdir.parent.parent),
@@ -386,7 +484,7 @@ def receive_proxy(
             "sample_rate": sr, "duration": total,
         }],
         "field_proxy": {"source": str(src), "path": str(dst),
-                        "gain_db": PROXY_GAIN_DB},
+                        "gain_db": gain_db},
     }
     write_json(outdir / "ingest.json", manifest)
     log(f"プロキシを受け取りました: {dst.name}  {fmt_time(total)} / {sr} Hz / "
@@ -437,7 +535,28 @@ ls -lh "{out}"
 """
 
 
-AUTO_SCRIPT_TEMPLATE = """#!/bin/sh
+# 測るほう(既定)。ピークを 1 パス測ってゲインを決める。
+GAIN_STEP_MEASURE = r"""# 3. ピークを測る(復号だけなので符号化より軽い)
+#    `2>` が使えるか確証がないので、stderr ではなく ametadata でファイルに書かせる。
+#    10 秒ごとに 1 行出るので、最後の行がその日のピークになる。
+echo "--- 1/2 ピークを測っています ---"
+ffmpeg -hide_banner -y -f concat -safe 0 -i fm_list.txt -af "{peakfilt}" -f null -
+tail -1 {peakfile} | sed "s/.*=//" > fm_peakdb.txt
+echo "--- 素材のピーク [dBFS] ---"
+cat fm_peakdb.txt
+
+# 4. 符号化直前のピークが {target} dBFS に来るゲインを決める
+awk '{{ g = {target} - $1; if (g > {limit}) g = {limit}; if (g < -{limit}) g = -{limit}; printf "%+.1f\n", g }}' fm_peakdb.txt > fm_gain.txt
+echo "--- 当てるゲイン [dB] ---"
+cat fm_gain.txt"""
+
+# 固定するほう(--gain を明示したとき)。測らずにその値を使う。
+GAIN_STEP_FIXED = r"""# 3-4. ゲインは指定された固定値を使う(測らない)
+echo "{fixed}" > fm_gain.txt
+echo "--- 当てるゲイン [dB](固定指定) ---"
+cat fm_gain.txt"""
+
+AUTO_SCRIPT_TEMPLATE = r"""#!/bin/sh
 # 練習録音を配布用プロキシ 1 本にまとめる(iPhone / a-Shell 用)。
 #
 #   1. {connect}
@@ -446,11 +565,19 @@ AUTO_SCRIPT_TEMPLATE = """#!/bin/sh
 #
 # **日付が書かれていないので、毎週作り直す必要はない。** その場にある .WAV の
 # うち、いちばん新しい日付のものだけを選んで使う。前の週のファイルが残っていても
-# 巻き込まない。出力は {{その日付}}_proxy.mp3({bitrate} MP3)。
+# 巻き込まない。
+#
+# **ゲインも固定していない。** 先にピークを測り、符号化直前のピークが {target} dBFS に
+# 来る値を当てる。素材のピークは日によって 27 dB も振れるので(260829 が +11.4、
+# 260912 が -15.5 dBFS)、固定値ではどちらかが必ず損をする。260912 は 14 dB 余計に
+# 下げてしまい、静かな場面が符号化器の雑音に埋もれた(静寂部の S/N が 13.6 dB)。
+#
+# 当てたゲインは**出力ファイル名に入る**。母艦はそれを読んで打ち消すので、
+# 名前を変えないこと。
 #
 # a-Shell のシェルは素朴なので、変数・コマンド置換・行継続・set -e・&& を
-# 使っていない。日付はファイル経由で受け渡し、最後の ffmpeg の行そのものを
-# sed で組み立てて sh に渡している。
+# 使っていない。値はすべてファイル経由で受け渡し、最後の ffmpeg の行そのものを
+# awk で組み立てて sh に渡している。
 #
 # 32bit float の原本は消さずに持ち帰ること(Drive 用の WAV は帰宅後に原本から作る)。
 
@@ -466,17 +593,19 @@ cat fm_date.txt
 echo "--- 使う入力 ---"
 cat fm_list.txt
 
-# 3. 日付入りの出力名で走らせる
-sed -e "s#^#ffmpeg -hide_banner -y -f concat -safe 0 -i fm_list.txt -af '{filt}' -c:a libmp3lame -b:a {bitrate} -map_metadata -1 #" -e 's#$#_proxy.mp3#' fm_date.txt > fm_run.sh
+{gainstep}
+
+# 5. 符号化する。ゲインを名前に入れた出力を作る。
+#    awk の %c(39) は単引用符。-af の値を包んでおかないと、左右入れ替えの
+#    `pan` に含まれる `|` がシェルにパイプと読まれる。
+echo "--- 2/2 符号化しています ---"
+awk 'NR==FNR {{ d = $0; next }} {{ printf "ffmpeg -hide_banner -y -f concat -safe 0 -i fm_list.txt -af %c{filt}volume=%sdB%c -c:a libmp3lame -b:a {bitrate} -map_metadata -1 %s_proxy_gain%sdB.mp3\n", 39, $0, 39, d, $0 }}' fm_date.txt fm_gain.txt > fm_run.sh
 sh fm_run.sh
 
-# 4. 作業ファイルを片付ける(残すと iPhone の Documents が散らかる)
-rm -f fm_all.txt fm_date.txt fm_list.txt fm_run.sh
+# 6. 作業ファイルを片付ける(残すと iPhone の Documents が散らかる)
+rm -f fm_all.txt fm_date.txt fm_list.txt {peakfile} fm_peakdb.txt fm_gain.txt fm_run.sh
 
-ls -lh *_proxy.mp3
-
-# ログの max_volume が -0.1 dB 以上なら、固定ゲイン {gain:+.1f} dB では足りていない。
-# その日は帰宅後に原本から作り直すこと。
+ls -lh *_proxy_gain*.mp3
 """
 
 
@@ -494,39 +623,44 @@ ls -lh *_proxy.mp3
 def auto_date_script(
     n_tracks: int,
     lr_map: str = "normal",
-    gain_db: float = PROXY_GAIN_DB,
+    gain_db: float | None = None,
     bitrate: str = PROXY_BITRATE,
     name: str = "field_master.sh",
     recorder: str = "zoom-f3",
 ) -> str | None:
-    """日付を自分で見つけるスクリプト。組めない構成なら `None` を返す。
+    """日付とゲインを自分で決めるスクリプト。組めない構成なら `None` を返す。
 
     **1 TAKE = 1 ファイルの機種でしか組めない。** concat デマルチプレクサは
     ファイルを縦に繋ぐだけなので、M4 のように 1 TAKE が 2 本のモノラルに
     分かれている構成は、`join` でステレオに組む工程が要り、ここには乗らない。
     その場合は日付を埋め込んだ従来の形に落ちる。
 
+    `gain_db` を渡すとピーク測定を省いてその値を使う。省略時は現場で測る。
+
     左右の入れ替えは `pan` 一つで済むラベルなしのフィルタなので `-af` に置ける。
     """
     if n_tracks != 1:
         return None
-    parts = []
-    if lr_map == "swapped":
-        parts.append(SWAP_STEREO)
-    parts.append(f"volume={gain_db:.6f}dB")
-    parts.append("volumedetect")
     # 引用符まわりに三つ罠がある。
-    #  - 左右入れ替えの `pan` は `|` を含む。sed の区切り文字と衝突するので
-    #    区切りは `#` にしてある。
-    #  - その `|` は、生成した run.sh を読むシェルにはパイプに見える。そこで
-    #    `-af` の値は run.sh の中で単引用符に包む。
-    #  - 末尾に足す側の `s#$#...#` を二重引用符に入れると、シェルが `$#` を
-    #    「引数の個数」として展開してしまう。`-e` で分けて単引用符に入れる。
-    filt = ",".join(parts)
+    #  - 左右入れ替えの `pan` は `|` を含む。生成した run.sh を読むシェルには
+    #    パイプに見えるので、`-af` の値は run.sh の中で単引用符に包む。
+    #  - その単引用符は awk の printf に `%c` (39) で出させる。スクリプト側の
+    #    引用符と入れ子にならないようにするため。
+    #  - ゲインは awk が計算してファイルに書き、次の awk が読む。シェル変数を
+    #    使わないのは a-Shell のシェルが素朴だからである。
+    filt = f"{SWAP_STEREO}," if lr_map == "swapped" else ""
+    if gain_db is None:
+        gainstep = GAIN_STEP_MEASURE.format(
+            peakfilt=PEAK_FILTER, peakfile=PEAK_FILE,
+            target=f"{PROXY_PEAK_TARGET_DB:+.1f}", limit=f"{PROXY_GAIN_LIMIT_DB:g}",
+        )
+    else:
+        gainstep = GAIN_STEP_FIXED.format(fixed=f"{gain_db:+.1f}")
     connect, _copy = RECORDER_NOTES.get(recorder, RECORDER_NOTES["zoom-m4"])
     return AUTO_SCRIPT_TEMPLATE.format(
         name=name, connect=connect.format(date="(その日)"),
-        filt=filt, bitrate=bitrate, gain=gain_db,
+        filt=filt, bitrate=bitrate, gainstep=gainstep,
+        peakfile=PEAK_FILE, target=f"{PROXY_PEAK_TARGET_DB:+.1f}",
     )
 
 
@@ -552,7 +686,7 @@ def field_script(
     return FIELD_SCRIPT_TEMPLATE.format(
         date=date, name=name, inputs=inputs, inputs_comment=inputs_comment,
         connect=connect.format(date=date), copy=copy.format(date=date),
-        out=out or f"{date}_proxy.mp3",
+        out=out or proxy_out_name(date, gain_db),
         filt=proxy_filter(n_takes, n_tracks, lr_map, gain_db),
         bitrate=bitrate, gain=gain_db,
     )

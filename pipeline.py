@@ -346,11 +346,12 @@ def cmd_field_script(args) -> None:
             bitrate=args.bitrate, name=args.name, recorder=profile.name,
         )
     if text is None:
+        # 日付を埋める形では現場でピークを測れないので、固定値に落ちる。
         text = field_mod.field_script(
             args.date, files, takes, len(tracks),
-            out=f"{args.date}_proxy.mp3", lr_map=cfg.ext_lr_map,
-            gain_db=args.gain, bitrate=args.bitrate, name=args.name,
-            recorder=profile.name,
+            lr_map=cfg.ext_lr_map,
+            gain_db=field_mod.PROXY_GAIN_DB if args.gain is None else args.gain,
+            bitrate=args.bitrate, name=args.name, recorder=profile.name,
         )
         if not args.pin_date:
             print(f"  ({profile.name} は 1 TAKE が {len(tracks)} ファイルに分かれるため、"
@@ -393,6 +394,8 @@ def cmd_field_proxy(args) -> None:
     print(f"=== 現場プロキシ ({args.date}) ===")
     print(f"  {dst}")
     print(f"  {info['size_mb']:.0f} MiB / ゲイン {info['gain_db']:+.1f} dB / {info['bitrate']}")
+    if info.get("source_peak_db") is not None:
+        print(f"  素材のピーク      : {info['source_peak_db']:+.2f} dBFS")
     print(f"  符号化直前のピーク: {info['pre_encode_peak_db']:+.2f} dBFS")
 
 
@@ -564,9 +567,19 @@ def cmd_field_export(args) -> None:
     if not proxy.exists():
         raise PipelineError(f"{proxy} がありません。先に `field-receive` を実行してください。")
     confirmed = Path(args.confirmed) if args.confirmed else outdir / "confirmed.json"
+    # **プロキシに当てたゲインは日によって違う。**現場がファイル名で伝えてきた値を
+    # `field-receive` が ingest.json に控えてあるので、そこから取る。取り違えると
+    # 測定が丸ごとずれるため、既定で推測しない。
+    gain_db = args.gain
+    if gain_db is None:
+        rec = read_json(outdir / "ingest.json").get("field_proxy", {}) \
+            if (outdir / "ingest.json").exists() else {}
+        gain_db = rec.get("gain_db", field_mod.PROXY_GAIN_DB)
+        log(f"プロキシのゲイン {gain_db:+.1f} dB を打ち消して測ります"
+            f"({'ingest.json より' if 'gain_db' in rec else '既定値'})")
     rows = field_mod.run_field_export(
         proxy, confirmed, outdir, cfg, args.date,
-        variant=args.variant, proxy_gain_db=args.gain,
+        variant=args.variant, proxy_gain_db=gain_db,
         target_lufs=args.target_lufs, true_peak_db=args.true_peak,
         ref_margin=args.ref_margin,
         # **速報版にパラレルコンプはかけない。**設定ファイルは読まず、
@@ -773,8 +786,9 @@ def build_parser() -> argparse.ArgumentParser:
         "field-script", help="現場(iPhone/a-Shell)で流すプロキシ作成スクリプトを出す")))
     sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
     sp.add_argument("--takes", type=int, default=2, help="その日の TAKE 数")
-    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
-                    help="符号化前に当てる固定ゲイン [dB]")
+    sp.add_argument("--gain", type=float, default=None,
+                    help="符号化前に当てるゲイン [dB]。"
+                         "既定は現場でピークを測って決める(固定しない)")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.add_argument("--name", default="field_master.sh")
     sp.add_argument("--pin-date", action="store_true",
@@ -787,7 +801,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp = common(sub.add_parser("field-proxy", help="母艦側でプロキシを作る(検証・代替用)"))
     sp.add_argument("--group", default="ext", help="対象系統 (既定: ext)")
     sp.add_argument("--output", default=None, help="出力先 (既定: output/{date}/raw_merged_ext_proxy.mp3)")
-    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB)
+    sp.add_argument("--gain", type=float, default=None,
+                    help="符号化前に当てるゲイン [dB]。既定は先にピークを測って決める")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
     sp.set_defaults(func=cmd_field_proxy)
 
@@ -843,8 +858,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--confirmed", default=None, help="確定JSON (既定: output/{date}/confirmed.json)")
     sp.add_argument("--group", default="ext")
     sp.add_argument("--variant", default="", help="版名。ファイル名末尾とID3タイトルに入る")
-    sp.add_argument("--gain", type=float, default=field_mod.PROXY_GAIN_DB,
-                    help="プロキシに当てた固定ゲイン [dB]。測定前に打ち消す")
+    sp.add_argument("--gain", type=float, default=None,
+                    help="プロキシに当てたゲイン [dB]。測定前に打ち消す。"
+                         "既定は ingest.json の field_proxy.gain_db")
     sp.add_argument("--target-lufs", type=float, default=loud_mod.DEFAULT_TARGET_LUFS)
     sp.add_argument("--true-peak", type=float, default=loud_mod.DEFAULT_TRUE_PEAK_DB)
     sp.add_argument("--ref-margin", type=float, default=120.0)
