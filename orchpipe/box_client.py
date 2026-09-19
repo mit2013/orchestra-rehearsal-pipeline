@@ -394,7 +394,38 @@ class BoxClient:
             raise PipelineError(f"commit に失敗しました ({resp.status_code}): {resp.text[:500]}")
         raise PipelineError("commit が完了しませんでした(再試行上限に到達)")
 
+    def upload_simple(self, path: Path, folder_id: str,
+                      existing_file_id: str | None) -> dict:
+        """50MB 以下のファイルを 1 リクエストで上げる。
+
+        `existing_file_id` を渡すと、そのファイルの新しいバージョンになる。
+        """
+        if existing_file_id:
+            url = f"{UPLOAD_BASE}/files/{existing_file_id}/content"
+            attrs = {"name": path.name}
+        else:
+            url = f"{UPLOAD_BASE}/files/content"
+            attrs = {"name": path.name, "parent": {"id": folder_id}}
+        with path.open("rb") as f:
+            resp = self.request(
+                "POST", url,
+                data={"attributes": json.dumps(attrs)},
+                files={"file": (path.name, f, "application/octet-stream")},
+                timeout=600,
+            )
+        d = self._check(resp, f"{path.name} のアップロード", ok=(200, 201))
+        return d["entries"][0] if "entries" in d else d
+
     def upload(self, path: Path, folder_id: str, existing_file_id: str | None = None) -> dict:
+        """大きさで経路を選ぶ。
+
+        **分割アップロードは 20MB 未満のファイルを受け付けない**
+        (`file_size_too_small`)。260919 の 12MB の楽章ファイルで実際に弾かれた。
+        それまで Box へ上げた最小が 24MB だったので気づいていなかった。
+        50MB 以下は単発アップロード、それより大きいものだけ分割にする。
+        """
+        if path.stat().st_size <= SIMPLE_UPLOAD_LIMIT:
+            return self.upload_simple(path, folder_id, existing_file_id)
         return self.upload_chunked(path, folder_id, existing_file_id)
 
     # -- ダウンロード ------------------------------------------------------
