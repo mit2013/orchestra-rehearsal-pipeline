@@ -33,10 +33,21 @@ TITLE_RULES: dict[int, list[str]] = {
 }
 
 
-def block_titles(n: int) -> list[str]:
-    """ブロック数からトラックタイトルを決める。"""
+def block_titles(n: int, override: list[str] | None = None) -> list[str]:
+    """ブロック数からトラックタイトルを決める。
+
+    `override` を渡すとそれを使う。その日の中身を名前に出したいとき
+    (「中盤(通し)」など)のための逃げ道で、本数が合わなければ止める。
+    """
     if n <= 0:
         raise PipelineError("ブロック数が 0 です")
+    if override:
+        if len(override) != n:
+            raise PipelineError(
+                f"--titles の個数 ({len(override)}) がブロック数 ({n}) と一致しません: "
+                + " / ".join(override)
+            )
+        return list(override)
     titles = TITLE_RULES.get(n)
     if titles is not None:
         return list(titles)
@@ -100,7 +111,8 @@ def find_mp3_files(outdir: Path) -> list[Path]:
     return files
 
 
-def plan_tracks(outdir: Path, date: str, variant: str = "") -> list[Track]:
+def plan_tracks(outdir: Path, date: str, variant: str = "",
+                titles_override: list[str] | None = None) -> list[Track]:
     """出力するトラックの一覧を組み立てる(まだ書き出さない)。"""
     trimmed = outdir / "trimmed"
     finals = find_final_files(trimmed)
@@ -122,7 +134,7 @@ def plan_tracks(outdir: Path, date: str, variant: str = "") -> list[Track]:
                 "`mix` をやり直してください。"
             )
 
-    titles = block_titles(len(finals))
+    titles = block_titles(len(finals), titles_override)
     export_dir = outdir / "export"
     tail = f"_{variant}" if variant else ""
     return [
@@ -164,8 +176,9 @@ def run_export(
     cfg: SessionConfig,
     force: bool = False,
     variant: str = "",
+    titles_override: list[str] | None = None,
 ) -> list[Track]:
-    tracks = plan_tracks(outdir, date, variant)
+    tracks = plan_tracks(outdir, date, variant, titles_override)
     export_dir = outdir / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
     year = year_from_date(date)

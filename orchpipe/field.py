@@ -294,6 +294,7 @@ def run_field_export(
     noise_ceiling_db: float | None = None,
     bitrate: str = PROXY_BITRATE,
     force: bool = False,
+    titles_override: list[str] | None = None,
 ) -> list[dict]:
     """プロキシ 1 本から、確定境界に従って配布用 MP3 を書き出す。
 
@@ -323,7 +324,7 @@ def run_field_export(
     if not keeps:
         raise PipelineError(f"{confirmed.name} に keep 区間がありません")
 
-    titles = block_titles(len(keeps))
+    titles = block_titles(len(keeps), titles_override)
     export_dir = outdir / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
     tail = f"_{variant}" if variant else ""

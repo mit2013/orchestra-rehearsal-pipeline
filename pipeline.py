@@ -249,6 +249,14 @@ def cmd_normalize(args) -> None:
     )
 
 
+def _titles(arg: str | None) -> list[str] | None:
+    """`--titles` の値をブロック名の並びにする。区切りは読点でもカンマでもよい。"""
+    if not arg:
+        return None
+    parts = [t.strip() for t in arg.replace("、", ",").split(",") if t.strip()]
+    return parts or None
+
+
 def _mastering(root: Path, **overrides) -> dict[str, float]:
     """耳で決める処理の値を決める。コマンドラインが優先、無ければ設定ファイル。
 
@@ -301,7 +309,8 @@ def cmd_export(args) -> None:
     outdir = out_dir(args.root, args.date)
     cfg = config_mod.load(outdir)
     tracks = export_mod.run_export(outdir, args.date, cfg, force=args.force,
-                                   variant=args.variant)
+                                   variant=args.variant,
+                                   titles_override=_titles(args.titles))
     print()
     print(f"=== エクスポート ({args.date}) ===")
     for t in tracks:
@@ -407,13 +416,14 @@ def cmd_field_receive(args) -> None:
     config_mod.ensure(outdir, args.root)
 
 
-def _review_blocks(outdir: Path, path: Path) -> list[dict]:
+def _review_blocks(outdir: Path, path: Path,
+                   titles_override: list[str] | None = None) -> list[dict]:
     """レビュー対象の keep 区間。名前は export と同じ規則で付ける。"""
     from orchpipe.apply import load_confirmed
     from orchpipe.export import block_titles
 
     keeps = load_confirmed(path, float("inf"))
-    titles = block_titles(len(keeps))
+    titles = block_titles(len(keeps), titles_override)
     return [{"start": k["start"], "end": k["end"], "name": t,
              "label": k.get("label", "")}
             for k, t in zip(keeps, titles)]
@@ -437,7 +447,7 @@ def cmd_review_page(args) -> None:
             "先に `propose` を実行してください。"
         )
     log(f"境界の入力: {given.name} / 音源: {src.name}")
-    blocks = _review_blocks(outdir, given)
+    blocks = _review_blocks(outdir, given, _titles(args.titles))
     dst = review_mod.build(
         outdir, args.date, src, blocks, orchestra=cfg.orchestra,
         pre_s=args.pre, post_s=args.post, bitrate=args.bitrate, force=args.force,
@@ -589,6 +599,7 @@ def cmd_field_export(args) -> None:
         parallel_db=args.parallel,
         noise_ceiling_db=args.noise_ceiling,
         bitrate=args.bitrate, force=args.force,
+        titles_override=_titles(args.titles),
     )
     write_json(outdir / "field_export.json", {"proxy": str(proxy), "blocks": rows})
     print()
@@ -780,6 +791,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--variant", default="",
                     help="版名。ファイル名末尾とID3タイトルに入る(例 ラウドネス調整版)。"
                          "既配布分を差し替えず別版として並べたいときに使う")
+    sp.add_argument("--titles", default=None,
+                    help="ブロック名を上書きする(例: 前半,中盤(通し),後半)。"
+                         "既定はブロック数から決める 前半/中盤/後半")
     sp.set_defaults(func=cmd_export)
 
     sp = with_recorder(common(sub.add_parser(
@@ -816,6 +830,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--post", type=float, default=review_mod.POST_S,
                     help="境界の後ろに含める長さ [秒]")
     sp.add_argument("--bitrate", default=review_mod.CLIP_BITRATE)
+    sp.add_argument("--titles", default=None,
+                    help="ブロック名を上書きする(export と同じ書式)")
     sp.set_defaults(func=cmd_review_page)
 
     sp = common(sub.add_parser("review-apply", help="レビューページの判定を confirmed.json に反映"))
@@ -873,6 +889,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="仕上がりの暗騒音の上限 [dBFS]。既定は目標ラウドネス "
                          f"-{loud_mod.NOISE_FLOOR_BELOW_TARGET_DB:g} dB")
     sp.add_argument("--bitrate", default=field_mod.PROXY_BITRATE)
+    sp.add_argument("--titles", default=None,
+                    help="ブロック名を上書きする(例: 前半,中盤(通し),後半)。"
+                         "既定はブロック数から決める 前半/中盤/後半")
     sp.set_defaults(func=cmd_field_export)
 
     sp = common(sub.add_parser("box-upload", help="MP3 を Box にアップロードし共有リンクを発行"))
