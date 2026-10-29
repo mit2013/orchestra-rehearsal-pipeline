@@ -1,0 +1,4 @@
+[
+  {"index": 1, "start": "00:00:00", "end": "01:42:00", "label": "開演前",   "action": "remove", "confidence": 1.0},
+  {"index": 2, "start": "01:42:00", "end": "03:37:09", "label": "本番",     "action": "keep",   "confidence": 1.0}
+]

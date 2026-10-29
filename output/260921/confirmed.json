@@ -1,0 +1,7 @@
+[
+  {"index": 1, "start": "00:00:00", "end": "00:15:50", "label": "音出し",   "action": "remove", "confidence": 1.0},
+  {"index": 2, "start": "00:15:50", "end": "01:33:20", "label": "前半",     "action": "keep",   "confidence": 1.0},
+  {"index": 3, "start": "01:33:20", "end": "01:48:52", "label": "休憩",     "action": "remove", "confidence": 1.0},
+  {"index": 4, "start": "01:48:52", "end": "03:04:00", "label": "後半",     "action": "keep",   "confidence": 1.0},
+  {"index": 5, "start": "03:04:00", "end": "03:06:37", "label": "片付け",   "action": "remove", "confidence": 1.0}
+]
